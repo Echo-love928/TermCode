@@ -1,0 +1,24 @@
+# 复制为同目录下的 config.yaml，并填写真实密钥。
+# 单个配置直接进入对话；启用多个配置时，启动后通过方向键和 Enter 选择。
+providers:
+  - name: claude
+    protocol: anthropic
+    model: claude-sonnet-4-20250514
+    api_key: "YOUR_ANTHROPIC_API_KEY"
+    thinking: true
+    # base_url: https://api.anthropic.com
+
+  # - name: openai
+  #   protocol: openai
+  #   model: YOUR_OPENAI_MODEL
+  #   api_key: "YOUR_OPENAI_API_KEY"
+  #   thinking: false
+  #   base_url: https://api.openai.com/v1
+
+  # DeepSeek 等兼容服务使用 openai 协议；模型和地址以服务商说明为准。
+  # - name: deepseek
+  #   protocol: openai
+  #   model: deepseek-chat
+  #   base_url: https://api.deepseek.com
+  #   api_key: "YOUR_DEEPSEEK_API_KEY"
+

@@ -1,0 +1,31 @@
+.venv/
+.venv-linux/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+*.egg-info/
+.termcode/config.yaml
+
+# 本机配置、凭据和编辑器工作区
+.termcode/*.yaml
+!.termcode/*.yaml.example
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.idea/
+.vscode/
+.agents/
+.codex/
+
+# 终端记录与验收原始输出可能包含本机路径，仅在本机留存
+docs/evidence/
+*.log
+
