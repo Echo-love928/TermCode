@@ -19,6 +19,7 @@ class BashTool:
     def description(self) -> str:
         return (
             "在当前工作目录执行 shell 命令（Unix sh / Windows cmd），返回输出及退出码。"
+            "读文件、找文件、搜内容请优先用 read_file/glob/grep，不要用 bash 拼凑。"
         )
 
     def parameters(self) -> dict[str, Any]:

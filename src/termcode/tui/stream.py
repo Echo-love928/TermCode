@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from rich.text import Text
 
+from termcode import __version__
 from termcode.agent import NOTICE_CANCELLED, Agent, Phase
 from termcode.tui.view import render_markdown, tool_line, tool_result_summary
 
@@ -22,7 +23,7 @@ async def consume_stream(app: TermCodeApp) -> None:
         return
     try:
         async with aclosing(
-            Agent(app.provider, app._tool_registry).run(
+            Agent(app.provider, app._tool_registry, __version__).run(
                 app.conv, app.mode, app.turn_cancel
             )
         ) as stream:

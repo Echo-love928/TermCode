@@ -8,13 +8,13 @@ from anthropic import AsyncAnthropic, omit
 from anthropic.types import (
     ContentBlockParam,
     MessageParam,
+    TextBlockParam,
     ThinkingConfigEnabledParam,
     ToolUnionParam,
 )
 
 from termcode.config import ProviderConfig
-from termcode.llm import Message, StreamEvent, ToolCall, ToolDefinition, Usage
-from termcode.prompt import SYSTEM_PROMPT
+from termcode.llm import Request, StreamEvent, ToolCall, Usage
 
 
 class AnthropicProvider:
@@ -38,15 +38,20 @@ class AnthropicProvider:
     async def aclose(self) -> None:
         await self._client.close()
 
-    async def stream(
-        self,
-        msgs: list[Message],
-        tools: list[ToolDefinition] | None = None,
-        system_suffix: str = "",
-    ) -> AsyncGenerator[StreamEvent, None]:
-        system = SYSTEM_PROMPT + ("\n\n" + system_suffix if system_suffix else "")
+    async def stream(self, req: Request) -> AsyncGenerator[StreamEvent, None]:
+        system: list[TextBlockParam] = []
+        if req.system.stable:
+            system.append(
+                {
+                    "type": "text",
+                    "text": req.system.stable,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            )
+        if req.system.environment:
+            system.append({"type": "text", "text": req.system.environment})
         messages: list[MessageParam] = []
-        for message in msgs:
+        for message in req.messages:
             if message.role == "user":
                 messages.append({"role": "user", "content": message.content})
             elif message.role == "tool":
@@ -80,6 +85,20 @@ class AnthropicProvider:
                 messages.append({"role": "assistant", "content": blocks})
             else:
                 messages.append({"role": "assistant", "content": message.content})
+        if req.reminder:
+            block: TextBlockParam = {"type": "text", "text": req.reminder}
+            if messages and messages[-1]["role"] == "user":
+                content = messages[-1]["content"]
+                # 只修改本次请求的副本，不改持久历史中的消息或工具结果。
+                reminder_blocks = (
+                    [TextBlockParam(type="text", text=content)]
+                    if isinstance(content, str)
+                    else list(content)
+                )
+                reminder_blocks.append(block)
+                messages[-1] = {"role": "user", "content": reminder_blocks}
+            else:
+                messages.append({"role": "user", "content": [block]})
         thinking: ThinkingConfigEnabledParam = {
             "type": "enabled",
             "budget_tokens": 2048,
@@ -93,14 +112,14 @@ class AnthropicProvider:
                     "description": d.description,
                     "input_schema": d.input_schema,
                 }
-                for d in tools or []
+                for d in req.tools
             ]
-            has_tool_history = any(m.tool_calls or m.tool_results for m in msgs)
+            has_tool_history = any(m.tool_calls or m.tool_results for m in req.messages)
             # 首轮思考增量沿用 ch02 丢弃策略，含工具历史时不再启用 thinking。
             async with self._client.messages.stream(
                 model=self.model,
                 max_tokens=4096,
-                system=system,
+                system=system if system else omit,
                 messages=messages,
                 thinking=thinking
                 if self._cfg.thinking and not has_tool_history
@@ -136,6 +155,13 @@ class AnthropicProvider:
                     usage=Usage(
                         final_message.usage.input_tokens,
                         final_message.usage.output_tokens,
+                        getattr(final_message.usage, "cache_creation_input_tokens", 0)
+                        or 0,
+                        getattr(final_message.usage, "cache_read_input_tokens", 0) or 0,
+                        cache_write_reported=getattr(
+                            final_message.usage, "cache_creation_input_tokens", None
+                        )
+                        is not None,
                     )
                 )
             yield StreamEvent(done=True)

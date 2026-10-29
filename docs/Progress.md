@@ -48,3 +48,22 @@
 | T8 全量及端到端 | 完成 | Windows/Linux 全量各 106 passed；本地双协议 tmux 通过；授权后 deepseek/zhipu 真实多轮、Plan/Do、能力答复及取消恢复通过，四个会话退出码 0 |
 
 完整逐项证据及验证范围见 [ch04 验收记录](ch04-Agent%20Loop/Acceptance.md)。
+
+## ch05 系统提示工程化
+
+T1–T12 开发完成：模块化稳定提示、环境分段、双协议缓存请求与用量解析、
+临时 system-reminder、规划提醒频率、工具描述强化及 smoke 已接入。
+保留 ch04 多轮、并发、取消、错误恢复及 TUI 现有用量展示。
+
+Windows 全量 134 项通过；Linux 全量 133 项通过，另新增 smoke 测试 1 项通过。
+双协议本地 tmux 与真实模型的规划/执行、环境问答、取消恢复、非 git 目录已执行。
+真实缓存读取：OpenAI 兼容端点 1408，Anthropic 兼容端点次轮 704。
+
+缓存诊断修复：确认智谱原始响应没有 `cache_creation_input_tokens`，新增
+`cache_write_reported` 标记区分未报告与真实零值；`smoke --check-cache` 使用独立人工前缀，
+按写读均验证、仅验证读取、未命中分别退出 0/2/1。修复后 Windows 全量 141 项通过。
+
+**原生严格验收保留待测：** 用户已明确选择继续使用当前智谱端点。
+该端点未提供缓存创建计数，不能满足 AC4 的正缓存创建计数观测要求；
+保留 Checklist 场景 1 未勾选，不推算或伪造写入量。
+逐项证据与具体结果见 [ch05 验收记录](ch05-System%20Prompt/Acceptance.md)。

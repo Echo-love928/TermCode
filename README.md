@@ -72,6 +72,8 @@ Windows 请使用 Windows Terminal 1.22 或更新版本；程序自动检测终�
 - 生成或执行工具时，Esc / Ctrl+C 取消本轮并留在会话中；空闲时 Ctrl+C 退出。
   `/exit` 在空闲时退出。
 - `/plan` 进入计划模式，只能读取和调查；`/do` 切回普通模式并立即按上文计划执行。
+- 系统提示按七个固定模块拼装，预留自定义指令、Skill 和记忆空槽；环境信息单独采集。
+  规划提醒通过临时消息按第 1、5、9…轮完整注入，其余轮精简，不写入会话历史。
 - 已完成内容保存在当前会话中；退出时将渲染后的记录写回普通终端供回看，
   不创建会话文件，下次启动历史为空。
 - 请求失败后显示红色错误，可继续输入；不自动重试。工具执行结果保留在上下文中，
@@ -112,10 +114,22 @@ uv run python tests/tmux_tools_e2e.py --live
 uv run python tests/tmux_loop_e2e.py
 # ch04 真实模型场景（会向当前配置的服务发送验收请求）
 uv run python tests/tmux_loop_e2e.py --live
+# ch05 系统提示、规划提醒、环境感知和非 git 目录
+uv run python tests/tmux_prompt_e2e.py
+uv run python tests/tmux_prompt_e2e.py --live
+# 连发两条消息，打印 input/output/cache_write/cache_read
+uv run python examples/smoke.py --provider my-provider
+# 独立冷缓存诊断：只发送人工测试文本，不带项目提示、环境或工具
+uv run python examples/smoke.py --provider my-provider --check-cache
 ```
 
 该脚本在独立测试目录创建临时配置，不覆盖项目的真实配置；启动真实 tmux 会话、
 发送对话和键盘操作，检查退出码与前后终端模式，并把记录保存在 `docs/evidence/`。
+
+smoke 用量中的 `cache_write_reported=false` 表示端点没有提供有效写入计数，
+此时 `cache_write=0` 只是兼容缺省值。`--check-cache` 每次使用新的测试标识与足够长的
+人工前缀，两轮间保持前缀完全相同。退出码 0 表示首轮写入与次轮读取均验证，
+2 表示只验证了读取，1 表示未观察到命中；不将读取计数推算为写入计数。
 
 Linux / WSL 中的真实端到端验收：
 
@@ -128,6 +142,8 @@ ch03 按照 `docs/ch03-ToolSystem/Checklist.md` 验收，
 实际结果记录在 `docs/ch03-ToolSystem/Acceptance.md`。
 ch04 按 `docs/ch04-Agent Loop/Checklist.md` 验收，
 实际结果与尚未完成的项目见 `docs/ch04-Agent Loop/Acceptance.md`。
+ch05 按 `docs/ch05-System Prompt/Checklist.md` 验收，
+实际结果与缓存服务支持情况见 `docs/ch05-System Prompt/Acceptance.md`。
 没有 tmux 或真实服务配置时，不将相应条目标为通过。
 
 `docs/evidence/` 中的验收原始记录由本机测试生成，可能包含工作目录等本机信息，
@@ -139,5 +155,7 @@ ch04 按 `docs/ch04-Agent Loop/Checklist.md` 验收，
 
 - [OpenAI 流式响应](https://developers.openai.com/api/docs/guides/streaming-responses)
 - [Claude 手动 extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)
+- [Claude 缓存前缀与用量字段](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+- [OpenAI 前缀缓存与 cached_tokens](https://developers.openai.com/cookbook/examples/prompt_caching101)
 - [Textual App API 与 inline 模式](https://textual.textualize.io/api/app/)
 

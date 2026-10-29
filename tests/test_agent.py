@@ -20,18 +20,31 @@ from termcode.agent import (
 )
 from termcode.conversation import Conversation
 from termcode.llm import StreamEvent, ToolCall, Usage
-from termcode.prompt import PLAN_MODE_REMINDER
+from termcode.prompt import Environment, build_system_prompt, plan_reminder
 from termcode.tool import Registry, Result, new_default_registry
 
 
+@pytest.fixture(autouse=True)
+def isolated_environment(monkeypatch):
+    # Agent 单测不依赖真实 git 耗时；实际采集与降级由 prompt/协议集成测试覆盖。
+    monkeypatch.setattr(
+        "termcode.prompt.gather_environment",
+        lambda version, model: Environment(
+            "/test", "test", "2026-10-29", "", version, model
+        ),
+    )
+
+
 class FakeProvider:
+    model = "test-model"
+
     def __init__(self, responses, repeat=False):
         self.responses = responses
         self.requests = []
         self.repeat = repeat
 
-    async def stream(self, msgs, tools=None, system_suffix=""):
-        self.requests.append((msgs, tools, system_suffix))
+    async def stream(self, req):
+        self.requests.append(req)
         response = self.responses[0] if self.repeat else self.responses.pop(0)
         for event in response:
             yield event
@@ -101,7 +114,7 @@ async def test_agent_multiround_read_write_history_and_final(tmp_path):
     assert "真实内容" in history[2].tool_results[0].content
     assert target.read_text(encoding="utf-8") == "摘要"
     assert json.loads(history[3].tool_calls[0].input)["content"] == "摘要"
-    assert provider.requests[2][0] == history[:5]
+    assert provider.requests[2].messages == history[:5]
     assert len(provider.requests) == 3
     assert_paired(conv)
 
@@ -260,7 +273,9 @@ async def test_cancel_stalled_stream_or_close_generator(early_close):
     closed = asyncio.Event()
 
     class StalledProvider:
-        async def stream(self, msgs, tools, system_suffix):
+        model = "test-model"
+
+        async def stream(self, req):
             try:
                 entered.set()
                 yield StreamEvent(text="部分")
@@ -303,7 +318,7 @@ async def test_cancel_before_request():
     assert conv.messages()[-1].content == NOTICE_CANCELLED
 
 
-async def test_plan_definitions_suffix_and_execution_guard(tmp_path):
+async def test_plan_definitions_reminder_and_execution_guard(tmp_path):
     path = tmp_path / "forbidden.txt"
     provider = FakeProvider(
         [
@@ -318,15 +333,17 @@ async def test_plan_definitions_suffix_and_execution_guard(tmp_path):
     assert events[-1].done
     assert not path.exists()
     assert conv.messages()[2].tool_results[0].is_error
-    assert [d.name for d in provider.requests[0][1]] == ["read_file", "glob", "grep"]
-    assert provider.requests[0][2] == PLAN_MODE_REMINDER
+    assert [d.name for d in provider.requests[0].tools] == ["read_file", "glob", "grep"]
+    assert provider.requests[0].reminder == plan_reminder(True)
     assert_paired(conv)
 
 
 @pytest.mark.parametrize("kind", ["event", "exception", "truncated"])
 async def test_stream_error_closes_history_and_allows_followup(kind):
     class BrokenProvider:
-        async def stream(self, msgs, tools, suffix):
+        model = "test-model"
+
+        async def stream(self, req):
             yield StreamEvent(text="部分输出")
             if kind == "event":
                 yield StreamEvent(err=RuntimeError("断流"))
@@ -365,3 +382,83 @@ async def test_empty_response_gets_nonempty_assistant():
     assert events[-1].done
     assert conv.messages()[-1].content == EMPTY_REPLY
     assert any(e.text == EMPTY_REPLY for e in events)
+
+
+async def test_request_modes_reminder_cadence_and_cache_passthrough(tmp_path):
+    source = tmp_path / "source.txt"
+    source.write_text("规划依据", encoding="utf-8")
+    provider = FakeProvider(
+        [
+            *[response(call(str(i), "read_file", path=str(source))) for i in range(5)],
+            [
+                StreamEvent(text="计划完成"),
+                StreamEvent(usage=Usage(10, 2, 123, 456, cache_write_reported=True)),
+                StreamEvent(done=True),
+            ],
+            response(text="普通模式完成"),
+            response(text="下一次规划完成"),
+        ]
+    )
+    conv = conversation()
+    agent = Agent(provider, new_default_registry(), "test-version")
+    events = [e async for e in agent.run(conv, Mode.PLAN)]
+    planned = list(provider.requests)
+    assert [r.reminder for r in planned] == [
+        plan_reminder(True),
+        *[plan_reminder(False)] * 3,
+        plan_reminder(True),
+        plan_reminder(False),
+    ]
+    assert all(
+        [d.name for d in r.tools] == ["read_file", "glob", "grep"] for r in planned
+    )
+    assert all(r.system.stable == build_system_prompt() for r in planned)
+    assert all(
+        "test-version" in r.system.environment and "test-model" in r.system.environment
+        for r in planned
+    )
+    assert len({r.system.environment for r in planned}) == 1
+    assert all("<system-reminder>" not in m.content for m in conv.messages())
+    assert [(e.usage.cache_write, e.usage.cache_read) for e in events if e.usage][
+        -1
+    ] == (123, 456)
+    assert [e.usage for e in events if e.usage][-1].cache_write_reported
+    conv.add_user("继续执行")
+    assert [e async for e in agent.run(conv)][-1].done
+    normal = provider.requests[-1]
+    assert normal.system.stable == planned[0].system.stable
+    assert len(normal.tools) == 6 and normal.reminder == ""
+    conv.add_user("重新规划")
+    assert [e async for e in agent.run(conv, Mode.PLAN)][-1].done
+    assert provider.requests[-1].reminder == plan_reminder(True)
+    assert_paired(conv)
+
+
+async def test_environment_collection_does_not_block_loop(monkeypatch):
+    import threading
+
+    from termcode import prompt
+
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(version, model):
+        entered.set()
+        release.wait(timeout=2)
+        return Environment("/tmp", "test", "", "", version, model)
+
+    monkeypatch.setattr(prompt, "gather_environment", slow)
+    provider = FakeProvider([response(text="完成")])
+
+    async def consume():
+        return [e async for e in Agent(provider, Registry()).run(conversation())]
+
+    task = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(asyncio.to_thread(entered.wait, 1), 1.5)
+        assert entered.is_set() and not provider.requests
+        # 到达此处说明采集阻塞期间事件循环仍能调度其他工作。
+        release.set()
+        assert (await asyncio.wait_for(task, 2))[-1].done
+    finally:
+        release.set()
+        await task

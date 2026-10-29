@@ -154,6 +154,7 @@ class SSEServer:
                                     "prompt_tokens": 12,
                                     "completion_tokens": 10,
                                     "total_tokens": 22,
+                                    **response.get("cache_fields", {}),
                                 },
                             }
                         )
@@ -174,7 +175,11 @@ class SSEServer:
                         "content": [],
                         "stop_reason": None,
                         "stop_sequence": None,
-                        "usage": {"input_tokens": 1, "output_tokens": 0},
+                        "usage": {
+                            "input_tokens": 1,
+                            "output_tokens": 0,
+                            **response.get("cache_fields", {}),
+                        },
                     },
                 )
                 index = 0
@@ -220,7 +225,10 @@ class SSEServer:
                         "stop_reason": "tool_use" if calls else "end_turn",
                         "stop_sequence": None,
                     },
-                    usage={"output_tokens": 10},
+                    usage={
+                        "output_tokens": 10,
+                        **response.get("final_cache_fields", {}),
+                    },
                 )
                 event("message_stop")
 

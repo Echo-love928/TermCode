@@ -5,8 +5,8 @@ import asyncio
 import pytest
 
 from termcode.config import ProviderConfig
-from termcode.llm import Message, new_provider
-from termcode.prompt import SYSTEM_PROMPT
+from termcode.llm import Message, Request, System, new_provider
+from termcode.prompt import build_system_prompt, plan_reminder
 
 
 def config(server, protocol, **changes):
@@ -29,7 +29,12 @@ async def test_real_sdk_sse_history_thinking_and_headers(sse_server, protocol):
         Message("user", "我的名字？"),
     ]
     try:
-        events = [event async for event in provider.stream(messages)]
+        events = [
+            event
+            async for event in provider.stream(
+                Request(messages, system=System(build_system_prompt()))
+            )
+        ]
     finally:
         await provider.aclose()
     assert events[-1].done
@@ -47,7 +52,13 @@ async def test_real_sdk_sse_history_thinking_and_headers(sse_server, protocol):
     assert body["model"] == "test-model"
     assert "tools" not in body
     if protocol == "anthropic":
-        assert body["system"] == SYSTEM_PROMPT
+        assert body["system"] == [
+            {
+                "type": "text",
+                "text": build_system_prompt(),
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
         assert body["thinking"] == {"type": "enabled", "budget_tokens": 2048}
         assert body["max_tokens"] == 4096
         headers = request["headers"]
@@ -58,7 +69,10 @@ async def test_real_sdk_sse_history_thinking_and_headers(sse_server, protocol):
         assert request["path"] == "/v1/messages"
         assert body["messages"][0]["content"] == messages[0].content
     else:
-        assert body["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}
+        assert body["messages"][0] == {
+            "role": "system",
+            "content": build_system_prompt(),
+        }
         assert "thinking" not in body
         assert request["headers"]["authorization"] == "Bearer TEST_SECRET"
         assert request["path"] == "/v1/chat/completions"
@@ -70,7 +84,9 @@ async def test_auth_error_is_event_and_not_retried(sse_server, protocol):
     sse_server.mode = "auth_error"
     provider = new_provider(config(sse_server, protocol))
     try:
-        events = [event async for event in provider.stream([Message("user", "你好")])]
+        events = [
+            event async for event in provider.stream(Request([Message("user", "你好")]))
+        ]
     finally:
         await provider.aclose()
     assert len(events) == 1
@@ -84,7 +100,9 @@ async def test_truncated_stream_is_not_success(sse_server, protocol):
     sse_server.mode = "truncated"
     provider = new_provider(config(sse_server, protocol))
     try:
-        events = [event async for event in provider.stream([Message("user", "你好")])]
+        events = [
+            event async for event in provider.stream(Request([Message("user", "你好")]))
+        ]
     finally:
         await provider.aclose()
     assert any(event.text for event in events)
@@ -98,7 +116,9 @@ async def test_cancellation_propagates(sse_server, protocol):
     provider = new_provider(config(sse_server, protocol))
 
     async def consume():
-        return [event async for event in provider.stream([Message("user", "你好")])]
+        return [
+            event async for event in provider.stream(Request([Message("user", "你好")]))
+        ]
 
     task = asyncio.create_task(consume())
     try:
@@ -116,8 +136,7 @@ async def test_cancellation_propagates(sse_server, protocol):
 
 
 @pytest.mark.parametrize("protocol", ["anthropic", "openai"])
-async def test_plan_suffix_is_appended_to_system(sse_server, protocol):
-    from termcode.prompt import PLAN_MODE_REMINDER
+async def test_plan_reminder_is_in_messages_only(sse_server, protocol):
     from termcode.tool import new_default_registry
 
     provider = new_provider(config(sse_server, protocol))
@@ -125,9 +144,12 @@ async def test_plan_suffix_is_appended_to_system(sse_server, protocol):
         events = [
             e
             async for e in provider.stream(
-                [Message("user", "制定计划")],
-                new_default_registry().read_only_definitions(),
-                PLAN_MODE_REMINDER,
+                Request(
+                    [Message("user", "制定计划")],
+                    new_default_registry().read_only_definitions(),
+                    System(build_system_prompt(), "环境信息：测试"),
+                    plan_reminder(True),
+                )
             )
         ]
     finally:
@@ -135,9 +157,17 @@ async def test_plan_suffix_is_appended_to_system(sse_server, protocol):
     assert events[-1].done
     body = sse_server.requests[0]["body"]
     system = (
-        body["system"] if protocol == "anthropic" else body["messages"][0]["content"]
+        "\n\n".join(b["text"] for b in body["system"])
+        if protocol == "anthropic"
+        else body["messages"][0]["content"]
     )
-    assert system == SYSTEM_PROMPT + "\n\n" + PLAN_MODE_REMINDER
+    assert system == build_system_prompt() + "\n\n环境信息：测试"
+    assert plan_reminder(True) not in system
+    if protocol == "anthropic":
+        assert body["messages"][-1]["content"][-1]["text"] == plan_reminder(True)
+        assert len(body["messages"]) == 1
+    else:
+        assert body["messages"][-1] == {"role": "user", "content": plan_reminder(True)}
     if protocol == "openai":
         assert body["stream_options"] == {"include_usage": True}
     names = [
@@ -151,7 +181,7 @@ async def test_openai_compatible_endpoint_without_usage_still_works(sse_server):
     sse_server.responses = [{"text": "兼容端点正文", "usage": False}]
     provider = new_provider(config(sse_server, "openai"))
     try:
-        events = [e async for e in provider.stream([Message("user", "你好")])]
+        events = [e async for e in provider.stream(Request([Message("user", "你好")]))]
     finally:
         await provider.aclose()
     assert events[-1].done

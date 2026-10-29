@@ -52,6 +52,24 @@ class Usage:
 
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_write: int = 0
+    cache_read: int = 0
+    # 数值仍按兼容约定缺省为零，另保留服务端是否提供了有效写入计数。
+    cache_write_reported: bool = False
+
+
+@dataclass(frozen=True)
+class System:
+    stable: str = ""
+    environment: str = ""
+
+
+@dataclass(frozen=True)
+class Request:
+    messages: list[Message] = field(default_factory=list)
+    tools: list[ToolDefinition] = field(default_factory=list)
+    system: System = field(default_factory=System)
+    reminder: str = ""
 
 
 @dataclass(frozen=True)
@@ -70,13 +88,8 @@ class Provider(Protocol):
     @property
     def model(self) -> str: ...
 
-    def stream(
-        self,
-        msgs: list[Message],
-        tools: list[ToolDefinition] | None = None,
-        system_suffix: str = "",
-    ) -> AsyncGenerator[StreamEvent, None]:
-        """系统后缀追加到内置提示；正常结束前返回本轮用量（若服务提供）。"""
+    def stream(self, req: Request) -> AsyncGenerator[StreamEvent, None]:
+        """稳定提示、环境与临时提醒分开传入；结束前返回用量（若服务提供）。"""
         ...
 
     async def aclose(self) -> None: ...

@@ -7,8 +7,7 @@ from openai import AsyncOpenAI, omit
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolUnionParam
 
 from termcode.config import ProviderConfig
-from termcode.llm import Message, StreamEvent, ToolCall, ToolDefinition, Usage
-from termcode.prompt import SYSTEM_PROMPT
+from termcode.llm import Request, StreamEvent, ToolCall, Usage
 
 
 class OpenAIProvider:
@@ -32,17 +31,14 @@ class OpenAIProvider:
     async def aclose(self) -> None:
         await self._client.close()
 
-    async def stream(
-        self,
-        msgs: list[Message],
-        tools: list[ToolDefinition] | None = None,
-        system_suffix: str = "",
-    ) -> AsyncGenerator[StreamEvent, None]:
-        system = SYSTEM_PROMPT + ("\n\n" + system_suffix if system_suffix else "")
-        messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": system}
-        ]
-        for message in msgs:
+    async def stream(self, req: Request) -> AsyncGenerator[StreamEvent, None]:
+        system = "\n\n".join(
+            part for part in (req.system.stable, req.system.environment) if part
+        )
+        messages: list[ChatCompletionMessageParam] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        for message in req.messages:
             if message.role == "user":
                 messages.append({"role": "user", "content": message.content})
             elif message.role == "tool":
@@ -74,6 +70,8 @@ class OpenAIProvider:
                 )
             else:
                 messages.append({"role": "assistant", "content": message.content})
+        if req.reminder:
+            messages.append({"role": "user", "content": req.reminder})
         try:
             complete = False
             buffers: dict[int, dict[str, str]] = {}
@@ -86,7 +84,7 @@ class OpenAIProvider:
                         "parameters": d.input_schema,
                     },
                 }
-                for d in tools or []
+                for d in req.tools
             ]
             stream = await self._client.chat.completions.create(
                 model=self.model,
@@ -100,7 +98,14 @@ class OpenAIProvider:
                     if chunk.usage is not None:
                         yield StreamEvent(
                             usage=Usage(
-                                chunk.usage.prompt_tokens, chunk.usage.completion_tokens
+                                chunk.usage.prompt_tokens,
+                                chunk.usage.completion_tokens,
+                                cache_read=getattr(
+                                    getattr(chunk.usage, "prompt_tokens_details", None),
+                                    "cached_tokens",
+                                    0,
+                                )
+                                or 0,
                             )
                         )
                     # 用量元数据可以不带 choices，不能将其视为文本。

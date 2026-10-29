@@ -6,14 +6,15 @@ from contextlib import aclosing
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 
+from termcode import __version__, prompt
 from termcode.conversation import Conversation
-from termcode.llm import Provider, ToolCall, ToolDefinition, ToolResult
+from termcode.llm import Provider, Request, System, ToolCall, ToolDefinition, ToolResult
 from termcode.llm import Usage as LLMUsage
-from termcode.prompt import PLAN_MODE_REMINDER
 from termcode.tool import Registry
 
 MAX_ITERATIONS = 25
 MAX_UNKNOWN_RUN = 3
+PLAN_REMINDER_INTERVAL = 4
 NOTICE_MAX_ITER = "（已达最大迭代轮数 25，自动停止；可继续发消息推进。）"
 NOTICE_UNKNOWN_TOOLS = "（连续多轮只请求到未注册的工具，自动停止。）"
 NOTICE_STREAM_ERR = "（请求出错，本轮已中断。）"
@@ -35,6 +36,9 @@ class Mode(IntEnum):
 class Usage:
     input: int = 0
     output: int = 0
+    cache_write: int = 0
+    cache_read: int = 0
+    cache_write_reported: bool = False
 
 
 @dataclass(frozen=True)
@@ -89,9 +93,12 @@ def args_preview(call: ToolCall) -> str:
 
 
 class Agent:
-    def __init__(self, provider: Provider, registry: Registry) -> None:
+    def __init__(
+        self, provider: Provider, registry: Registry, version: str = __version__
+    ) -> None:
         self._provider = provider
         self._registry = registry
+        self._version = version
 
     async def run(
         self,
@@ -125,18 +132,41 @@ class Agent:
             if mode == Mode.PLAN
             else self._registry.definitions()
         )
-        suffix = PLAN_MODE_REMINDER if mode == Mode.PLAN else ""
         unknown_run = 0
         try:
+            if cancel.is_set():
+                raise _TurnCancelled
+            environment = await _until_cancel(
+                asyncio.to_thread(
+                    prompt.gather_environment, self._version, self._provider.model
+                ),
+                cancel,
+            )
+            system = System(prompt.build_system_prompt(), environment.render())
             for iteration in range(1, MAX_ITERATIONS + 1):
                 if cancel.is_set():
                     raise _TurnCancelled
                 push(Event(iter=iteration))
+                reminder = (
+                    prompt.plan_reminder((iteration - 1) % PLAN_REMINDER_INTERVAL == 0)
+                    if mode == Mode.PLAN
+                    else ""
+                )
                 text, calls, usage = await self._stream_once(
-                    conv, definitions, suffix, cancel, push
+                    conv, definitions, system, reminder, cancel, push
                 )
                 if usage is not None:
-                    push(Event(usage=Usage(usage.input_tokens, usage.output_tokens)))
+                    push(
+                        Event(
+                            usage=Usage(
+                                usage.input_tokens,
+                                usage.output_tokens,
+                                usage.cache_write,
+                                usage.cache_read,
+                                usage.cache_write_reported,
+                            )
+                        )
+                    )
                 if cancel.is_set():
                     raise _TurnCancelled
                 if not calls:
@@ -181,7 +211,8 @@ class Agent:
         self,
         conv: Conversation,
         definitions: list[ToolDefinition],
-        suffix: str,
+        system: System,
+        reminder: str,
         cancel: asyncio.Event,
         push: Push,
     ) -> tuple[str, list[ToolCall], LLMUsage | None]:
@@ -189,7 +220,9 @@ class Agent:
         calls: list[ToolCall] = []
         usage = None
         async with aclosing(
-            self._provider.stream(conv.messages(), definitions, suffix)
+            self._provider.stream(
+                Request(conv.messages(), definitions, system, reminder)
+            )
         ) as stream:
             while True:
                 try:
