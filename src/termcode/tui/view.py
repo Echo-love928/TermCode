@@ -5,6 +5,7 @@ from collections.abc import Iterable
 
 from rich.console import Group
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
@@ -19,6 +20,21 @@ def clean_text(text: str, secrets: Iterable[str] = ()) -> str:
 
 def user_block(text: str) -> Text:
     return Text("● " + text, style="bold")
+
+
+def tool_line(name: str, args: str) -> Text:
+    return Text.assemble(("● ", "bold cyan"), (f"{name}({args})", "bold"))
+
+
+def tool_result_summary(result: str, is_error: bool = False) -> Padding:
+    # 界面保留八行摘要，完整的工具级限长结果仍回灌给模型。
+    lines = result[:1601].splitlines()
+    summary = "\n".join(lines[:8])[:1600]
+    if len(lines) > 8 or len(result) > 1600:
+        summary += "\n[truncated]"
+    return Padding(
+        Text("⎿ " + summary, style="red" if is_error else "dim"), (0, 0, 0, 2)
+    )
 
 
 def render_markdown(reply: str, elapsed: float) -> Group:

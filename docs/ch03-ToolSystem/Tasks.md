@@ -1,5 +1,7 @@
 # 工具系统 Tasks
 
+> 实现状态（2026-10-29）：T1–T18 已完成。Windows/Linux 全量测试及双协议真实模型 tmux 验收结果见 [Acceptance.md](Acceptance.md)。命令非零退出按 Spec F9 标记错误；执行细节与原任务的差异见验收记录。
+
 > 基于已批准的 spec.md + plan.md。任务有序，每步留绿（`python -m termcode` 可启动 / `pytest` 通过 / `ruff check` 无告警）。验证一律「先跑命令看输出，再下结论」。
 
 ## 文件清单

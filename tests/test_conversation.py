@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from termcode.conversation import Conversation
+from termcode.llm import Message, ToolCall, ToolResult
 
 
 def test_history_and_copy():
@@ -30,3 +31,23 @@ def test_session_isolation_and_failed_turn():
     conv.discard_pending_user()
     assert len(conv.messages()) == 2
     assert Conversation().messages() == []
+
+
+def test_conversation_copies_tool_lists():
+    conv = Conversation()
+    calls = [ToolCall("1", "x", "{}")]
+    results = [ToolResult("1", "bad", True)]
+    conv.add_user("hi")
+    conv.add_assistant_with_tool_calls("", calls)
+    conv.add_tool_results(results)
+    conv.add_assistant("done")
+    calls.clear()
+    results.clear()
+    assert [m.role for m in conv.messages()] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert conv.messages()[1].tool_calls and conv.messages()[2].tool_results
+    assert Message("user", "hello").tool_calls == []

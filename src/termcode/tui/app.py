@@ -17,10 +17,12 @@ from textual.timer import Timer
 from textual.widgets import OptionList, RichLog, Static, TextArea
 
 from termcode import __version__
+from termcode.agent import ToolEvent
 from termcode.config import ProviderConfig
 from termcode.conversation import Conversation
 from termcode.llm import Provider, new_provider
 from termcode.prompt import StartupBanner
+from termcode.tool import Registry, new_default_registry
 from termcode.tui.banner import (
     BannerArtwork,
     TranscriptLog,
@@ -96,7 +98,9 @@ class TermCodeApp(App[None]):
     #statusbar { height: 1; width: 1fr; }
     """
 
-    def __init__(self, providers: list[ProviderConfig]) -> None:
+    def __init__(
+        self, providers: list[ProviderConfig], registry: Registry | None = None
+    ) -> None:
         super().__init__()
         if not providers:
             raise ValueError("至少需要一项供应商配置")
@@ -104,6 +108,10 @@ class TermCodeApp(App[None]):
         self.provider: Provider | None = None
         self.state = SessionState.SELECTING
         self.conv = Conversation()
+        self._tool_registry = (
+            registry if registry is not None else new_default_registry()
+        )
+        self._cur_tool: ToolEvent | None = None
         self.cur_reply = ""
         self.turn_start = 0.0
         self._stream_task: asyncio.Task[None] | None = None
@@ -224,12 +232,18 @@ class TermCodeApp(App[None]):
         content = Text()
         if self.cur_reply:
             content.append("● " + self._clean(self.cur_reply) + "\n")
-        content.append(f"{spinner} Imagining… ({elapsed}s)", style="dim")
+        if self._cur_tool is not None:
+            content.append(
+                self._clean(f"● {self._cur_tool.name}({self._cur_tool.args})\n"),
+                style="bold cyan",
+            )
+            content.append(f"{spinner} Running… ({elapsed}s)", style="dim")
+        else:
+            content.append(f"{spinner} Imagining… ({elapsed}s)", style="dim")
         self.query_one("#streaming", Static).update(content)
         self.query_one("#streaming-scroll", VerticalScroll).scroll_end(animate=False)
 
     def _finish_with_assistant(self, reply: str) -> None:
-        self.conv.add_assistant(reply)
         self._write(
             render_markdown(self._clean(reply), time.monotonic() - self.turn_start)
         )
@@ -252,6 +266,7 @@ class TermCodeApp(App[None]):
             self._timer = None
         self._stream_task = None
         self.cur_reply = ""
+        self._cur_tool = None
         self.state = SessionState.IDLE
         self.query_one("#streaming", Static).update("")
         self.query_one("#streaming-scroll").display = False

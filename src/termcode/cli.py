@@ -12,11 +12,12 @@ def main() -> None:
         print(f"TermCode: {exc}", file=sys.stderr)
         raise SystemExit(1) from None
 
+    from termcode.tool import new_default_registry
     from termcode.tui.app import TermCodeApp
     from termcode.tui.keys import configure_terminal_keys
 
     configure_terminal_keys()
-    app = TermCodeApp(config.providers)
+    app = TermCodeApp(config.providers, registry=new_default_registry())
     try:
         app.run(inline=True)
     except KeyboardInterrupt:

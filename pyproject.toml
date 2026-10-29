@@ -45,6 +45,9 @@ extend-exclude = [".cache", ".venv-linux"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
 
+[tool.ruff.format]
+exclude = ["*.md"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ASYNC109", "ASYNC110"]
 

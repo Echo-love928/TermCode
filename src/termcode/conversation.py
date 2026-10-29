@@ -1,6 +1,6 @@
 """仅保存在进程内的单会话历史。"""
 
-from termcode.llm import Message
+from termcode.llm import Message, ToolCall, ToolResult
 
 
 class Conversation:
@@ -12,6 +12,12 @@ class Conversation:
 
     def add_assistant(self, text: str) -> None:
         self._messages.append(Message("assistant", text))
+
+    def add_assistant_with_tool_calls(self, text: str, calls: list[ToolCall]) -> None:
+        self._messages.append(Message("assistant", text, tool_calls=list(calls)))
+
+    def add_tool_results(self, results: list[ToolResult]) -> None:
+        self._messages.append(Message("tool", tool_results=list(results)))
 
     def messages(self) -> list[Message]:
         return list(self._messages)

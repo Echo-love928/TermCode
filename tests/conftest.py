@@ -13,6 +13,7 @@ class SSEServer:
         self.requests: list[dict] = []
         self.mode = "normal"
         self.delay = 0.005
+        self.responses: list[dict] = []
         self.gate = threading.Event()
         self.gate.set()
         owner = self
@@ -53,7 +54,9 @@ class SSEServer:
                 self.end_headers()
                 owner.gate.wait(timeout=5)
                 try:
-                    if self.path.endswith("/messages"):
+                    if owner.responses:
+                        self.scripted(owner.responses.pop(0))
+                    elif self.path.endswith("/messages"):
                         self.anthropic(body)
                     else:
                         self.openai()
@@ -66,6 +69,142 @@ class SSEServer:
                 self.wfile.write(data.encode("utf-8"))
                 self.wfile.flush()
                 time.sleep(owner.delay)
+
+            def scripted(self, response: dict) -> None:
+                """提供含碎片参数、多工具和续答的可控协议响应。"""
+                calls = response.get("calls", [])
+                text = response.get("text", "")
+                if not self.path.endswith("/messages"):
+
+                    def chunk(delta, finish=None):
+                        self.event(
+                            {
+                                "id": "chatcmpl-tool",
+                                "object": "chat.completion.chunk",
+                                "created": 1,
+                                "model": "test-model",
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": delta,
+                                        "finish_reason": finish,
+                                    }
+                                ],
+                            }
+                        )
+
+                    if text:
+                        chunk({"content": text})
+                    # 交错发送多个调用，并将名称和 JSON 均拆成片段。
+                    for index, call in enumerate(calls):
+                        chunk(
+                            {
+                                "tool_calls": [
+                                    {
+                                        "index": index,
+                                        "id": call["id"],
+                                        "type": "function",
+                                        "function": {
+                                            "name": call["name"][:3],
+                                            "arguments": "",
+                                        },
+                                    }
+                                ]
+                            }
+                        )
+                    for index, call in enumerate(calls):
+                        raw = call["input"]
+                        middle = len(raw) // 2
+                        chunk(
+                            {
+                                "tool_calls": [
+                                    {
+                                        "index": index,
+                                        "function": {
+                                            "name": call["name"][3:],
+                                            "arguments": raw[:middle],
+                                        },
+                                    }
+                                ]
+                            }
+                        )
+                        chunk(
+                            {
+                                "tool_calls": [
+                                    {
+                                        "index": index,
+                                        "function": {"arguments": raw[middle:]},
+                                    }
+                                ]
+                            }
+                        )
+                    chunk({}, "tool_calls" if calls else "stop")
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                    return
+
+                def event(kind, **body):
+                    self.event({"type": kind, **body}, kind)
+
+                event(
+                    "message_start",
+                    message={
+                        "id": "msg_tool",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "test-model",
+                        "content": [],
+                        "stop_reason": None,
+                        "stop_sequence": None,
+                        "usage": {"input_tokens": 1, "output_tokens": 0},
+                    },
+                )
+                index = 0
+                if text:
+                    event(
+                        "content_block_start",
+                        index=index,
+                        content_block={"type": "text", "text": ""},
+                    )
+                    event(
+                        "content_block_delta",
+                        index=index,
+                        delta={"type": "text_delta", "text": text},
+                    )
+                    event("content_block_stop", index=index)
+                    index += 1
+                for call in calls:
+                    event(
+                        "content_block_start",
+                        index=index,
+                        content_block={
+                            "type": "tool_use",
+                            "id": call["id"],
+                            "name": call["name"],
+                            "input": {},
+                        },
+                    )
+                    raw = call["input"]
+                    for fragment in (raw[: len(raw) // 2], raw[len(raw) // 2 :]):
+                        event(
+                            "content_block_delta",
+                            index=index,
+                            delta={
+                                "type": "input_json_delta",
+                                "partial_json": fragment,
+                            },
+                        )
+                    event("content_block_stop", index=index)
+                    index += 1
+                event(
+                    "message_delta",
+                    delta={
+                        "stop_reason": "tool_use" if calls else "end_turn",
+                        "stop_sequence": None,
+                    },
+                    usage={"output_tokens": 10},
+                )
+                event("message_stop")
 
             def openai(self) -> None:
                 for text in [

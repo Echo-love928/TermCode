@@ -3,11 +3,11 @@
 import asyncio
 from collections.abc import AsyncGenerator
 
-from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionMessageParam
+from openai import AsyncOpenAI, omit
+from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolUnionParam
 
 from termcode.config import ProviderConfig
-from termcode.llm import Message, StreamEvent
+from termcode.llm import Message, StreamEvent, ToolCall, ToolDefinition
 from termcode.prompt import SYSTEM_PROMPT
 
 
@@ -32,19 +32,63 @@ class OpenAIProvider:
     async def aclose(self) -> None:
         await self._client.close()
 
-    async def stream(self, msgs: list[Message]) -> AsyncGenerator[StreamEvent, None]:
+    async def stream(
+        self, msgs: list[Message], tools: list[ToolDefinition] | None = None
+    ) -> AsyncGenerator[StreamEvent, None]:
         messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
         for message in msgs:
             if message.role == "user":
                 messages.append({"role": "user", "content": message.content})
+            elif message.role == "tool":
+                for result in message.tool_results:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": result.tool_call_id,
+                            "content": result.content,
+                        }
+                    )
+            elif message.tool_calls:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": message.content or None,
+                        "tool_calls": [
+                            {
+                                "id": call.id,
+                                "type": "function",
+                                "function": {
+                                    "name": call.name,
+                                    "arguments": call.input or "{}",
+                                },
+                            }
+                            for call in message.tool_calls
+                        ],
+                    }
+                )
             else:
                 messages.append({"role": "assistant", "content": message.content})
         try:
             complete = False
+            buffers: dict[int, dict[str, str]] = {}
+            definitions: list[ChatCompletionToolUnionParam] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": d.name,
+                        "description": d.description,
+                        "parameters": d.input_schema,
+                    },
+                }
+                for d in tools or []
+            ]
             stream = await self._client.chat.completions.create(
-                model=self.model, messages=messages, stream=True
+                model=self.model,
+                messages=messages,
+                stream=True,
+                tools=definitions if definitions else omit,
             )
             async with stream:
                 async for chunk in stream:
@@ -54,12 +98,30 @@ class OpenAIProvider:
                     choice = chunk.choices[0]
                     if choice.delta.content:
                         yield StreamEvent(text=choice.delta.content)
+                    for delta in choice.delta.tool_calls or []:
+                        buf = buffers.setdefault(
+                            delta.index, {"id": "", "name": "", "args": ""}
+                        )
+                        if delta.id:
+                            buf["id"] += delta.id
+                        if delta.function:
+                            buf["name"] += delta.function.name or ""
+                            buf["args"] += delta.function.arguments or ""
                     if choice.finish_reason is not None:
-                        if choice.finish_reason != "stop":
+                        if choice.finish_reason not in {"stop", "tool_calls"}:
                             raise RuntimeError("回复未完整结束，或返回了不支持的内容")
                         complete = True
             if not complete:
                 raise RuntimeError("响应流提前结束，请重新发送问题")
+            if buffers:
+                if any(not b["id"] or not b["name"] for b in buffers.values()):
+                    raise RuntimeError("工具调用缺少 ID 或名称，请重新发送问题")
+                yield StreamEvent(
+                    tool_calls=[
+                        ToolCall(b["id"], b["name"], b["args"] or "{}")
+                        for _, b in sorted(buffers.items())
+                    ]
+                )
             yield StreamEvent(done=True)
         except asyncio.CancelledError:
             raise
