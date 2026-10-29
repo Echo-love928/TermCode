@@ -64,11 +64,14 @@ Windows 请使用 Windows Terminal 1.22 或更新版本；程序自动检测终�
 
 - Enter 发送，Alt+Enter 换行；生成时暂不接受下一轮提交。
 - 收到增量立即显示纯文本；完成后用 Markdown 渲染，支持代码块、列表和强调。
-- 从发送起显示 `Imagining… (Ns)`，完成或失败后显示总耗时。
+- 从发送起显示 `Imagining… (Ns · 第 N 轮)`，完成或失败后显示总耗时。
+- 状态栏累计展示输入/输出 token 用量；服务未返回用量时不增加。
 - 工具执行时显示 `● name(参数)` 和 `Running…`；完成后保留工具行与缩进摘要，
   失败结果显示为红色，长结果带 `[truncated]` 标记。
 - PageUp / PageDown 翻看已完成内容，也可用鼠标滚动。
-- `/exit` 或 Ctrl+C 退出；Ctrl+C 在生成过程中也会退出程序。
+- 生成或执行工具时，Esc / Ctrl+C 取消本轮并留在会话中；空闲时 Ctrl+C 退出。
+  `/exit` 在空闲时退出。
+- `/plan` 进入计划模式，只能读取和调查；`/do` 切回普通模式并立即按上文计划执行。
 - 已完成内容保存在当前会话中；退出时将渲染后的记录写回普通终端供回看，
   不创建会话文件，下次启动历史为空。
 - 请求失败后显示红色错误，可继续输入；不自动重试。工具执行结果保留在上下文中，
@@ -76,8 +79,9 @@ Windows 请使用 Windows Terminal 1.22 或更新版本；程序自动检测终�
 - 提供 `read_file`、`write_file`、`edit_file`、`bash`、`glob`、`grep` 六个工具。
   `edit_file` 只替换唯一匹配的原文；`bash` 使用当前平台 shell（Unix sh / Windows cmd），
   返回 stdout、stderr 与退出码，非零退出作为错误结果。
-- 每次用户请求最多执行一批工具，同批按顺序执行，再由模型续答一次。
-  续答再次请求工具时提示达到上限，请发送新请求继续。
+- 模型可跨多轮持续调用工具，直到完成任务；内置最多 25 轮，连续 3 轮只请求未知工具时停止。
+  连续只读调用（read_file/glob/grep）并发执行，写入、修改和命令按顺序串行执行，
+  工具结果始终按调用顺序回灌。取消、错误或触达上限后补齐历史，可继续对话。
 - 工具超时默认为 30 秒；命令超时会清理子进程。读文件最多 2000 行或 256KB，
   命令分别保留最多 14KB stdout/stderr，glob/grep 最多 100 条结果。
   本章工具没有授权确认或目录沙箱，请在需要操作的项目目录运行。
@@ -104,6 +108,10 @@ uv run python tests/tmux_e2e.py
 uv run python tests/tmux_tools_e2e.py
 # ch03 工具场景：当前配置中的真实模型
 uv run python tests/tmux_tools_e2e.py --live
+# ch04 多轮循环、取消、错误恢复、计划模式：本地 SSE
+uv run python tests/tmux_loop_e2e.py
+# ch04 真实模型场景（会向当前配置的服务发送验收请求）
+uv run python tests/tmux_loop_e2e.py --live
 ```
 
 该脚本在独立测试目录创建临时配置，不覆盖项目的真实配置；启动真实 tmux 会话、
@@ -118,6 +126,8 @@ uv run termcode
 
 ch03 按照 `docs/ch03-ToolSystem/Checklist.md` 验收，
 实际结果记录在 `docs/ch03-ToolSystem/Acceptance.md`。
+ch04 按 `docs/ch04-Agent Loop/Checklist.md` 验收，
+实际结果与尚未完成的项目见 `docs/ch04-Agent Loop/Acceptance.md`。
 没有 tmux 或真实服务配置时，不将相应条目标为通过。
 
 `docs/evidence/` 中的验收原始记录由本机测试生成，可能包含工作目录等本机信息，

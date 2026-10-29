@@ -11,6 +11,8 @@ from termcode.tool import TRUNCATED, Result, _truncate, arguments, string_schema
 
 
 class BashTool:
+    read_only = False
+
     def name(self) -> str:
         return "bash"
 

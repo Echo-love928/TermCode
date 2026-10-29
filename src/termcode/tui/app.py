@@ -17,11 +17,11 @@ from textual.timer import Timer
 from textual.widgets import OptionList, RichLog, Static, TextArea
 
 from termcode import __version__
-from termcode.agent import ToolEvent
+from termcode.agent import Mode, ToolEvent
 from termcode.config import ProviderConfig
 from termcode.conversation import Conversation
 from termcode.llm import Provider, new_provider
-from termcode.prompt import StartupBanner
+from termcode.prompt import EXECUTE_DIRECTIVE, StartupBanner
 from termcode.tool import Registry, new_default_registry
 from termcode.tui.banner import (
     BannerArtwork,
@@ -77,7 +77,8 @@ class TermCodeApp(App[None]):
     TITLE = "TermCode"
     ENABLE_COMMAND_PALETTE = False
     BINDINGS = [
-        Binding("ctrl+c", "quit", "退出", priority=True),
+        Binding("ctrl+c", "interrupt", "取消或退出", priority=True),
+        Binding("escape", "cancel_turn", "取消本轮", priority=True),
         Binding("pageup", "history_up", "向上翻页", priority=True),
         Binding("pagedown", "history_down", "向下翻页", priority=True),
     ]
@@ -111,7 +112,12 @@ class TermCodeApp(App[None]):
         self._tool_registry = (
             registry if registry is not None else new_default_registry()
         )
-        self._cur_tool: ToolEvent | None = None
+        self.cur_tools: list[ToolEvent] = []
+        self.mode = Mode.NORMAL
+        self.iter = 0
+        self.usage_in = 0
+        self.usage_out = 0
+        self.turn_cancel: asyncio.Event | None = None
         self.cur_reply = ""
         self.turn_start = 0.0
         self._stream_task: asyncio.Task[None] | None = None
@@ -187,12 +193,20 @@ class TermCodeApp(App[None]):
         self._provider_closed = False
         self.state = SessionState.IDLE
         self._show_selection(False)
-        self.query_one("#statusbar", Static).update(
-            status_bar(
-                self._clean(self.provider.name), self._clean(self.provider.model)
-            )
-        )
+        self._refresh_statusbar()
         self.query_one("#input", ChatInput).focus()
+
+    def _refresh_statusbar(self) -> None:
+        if self.provider is not None:
+            self.query_one("#statusbar", Static).update(
+                status_bar(
+                    self._clean(self.provider.name),
+                    self._clean(self.provider.model),
+                    self.mode == Mode.PLAN,
+                    self.usage_in,
+                    self.usage_out,
+                )
+            )
 
     @on(OptionList.OptionSelected, "#providers")
     def select_provider(self, event: OptionList.OptionSelected) -> None:
@@ -209,10 +223,22 @@ class TermCodeApp(App[None]):
         if text.strip() == "/exit":
             await self.action_quit()
             return
-        self.conv.add_user(text)
-        self._write(user_block(self._clean(text)))
         editor = self.query_one("#input", ChatInput)
         editor.clear()
+        if text.strip() == "/plan":
+            self.mode = Mode.PLAN
+            self._write(Text("已进入计划模式（只读工具）；/do 开始执行。", style="dim"))
+            self._refresh_statusbar()
+            return
+        if text.strip() == "/do":
+            self.mode = Mode.NORMAL
+            self.conv.add_user(EXECUTE_DIRECTIVE)
+        else:
+            self.conv.add_user(text)
+        self._write(user_block(self._clean(text)))
+        self._refresh_statusbar()
+        self.turn_cancel = asyncio.Event()
+        self.iter = 0
         editor.read_only = True
         self.cur_reply = ""
         self.turn_start = time.monotonic()
@@ -232,14 +258,17 @@ class TermCodeApp(App[None]):
         content = Text()
         if self.cur_reply:
             content.append("● " + self._clean(self.cur_reply) + "\n")
-        if self._cur_tool is not None:
-            content.append(
-                self._clean(f"● {self._cur_tool.name}({self._cur_tool.args})\n"),
-                style="bold cyan",
-            )
-            content.append(f"{spinner} Running… ({elapsed}s)", style="dim")
+        progress = f" · 第 {self.iter} 轮" if self.iter else ""
+        if self.cur_tools:
+            for tool in self.cur_tools:
+                content.append(
+                    self._clean(f"● {tool.name}({tool.args})\n"), style="bold cyan"
+                )
+                content.append(
+                    f"{spinner} Running… ({elapsed}s{progress})\n", style="dim"
+                )
         else:
-            content.append(f"{spinner} Imagining… ({elapsed}s)", style="dim")
+            content.append(f"{spinner} Imagining… ({elapsed}s{progress})", style="dim")
         self.query_one("#streaming", Static).update(content)
         self.query_one("#streaming-scroll", VerticalScroll).scroll_end(animate=False)
 
@@ -257,7 +286,6 @@ class TermCodeApp(App[None]):
                 self._clean(error_message(error)), time.monotonic() - self.turn_start
             )
         )
-        self.conv.discard_pending_user()
         self._return_to_idle()
 
     def _return_to_idle(self) -> None:
@@ -266,7 +294,9 @@ class TermCodeApp(App[None]):
             self._timer = None
         self._stream_task = None
         self.cur_reply = ""
-        self._cur_tool = None
+        self.cur_tools = []
+        self.iter = 0
+        self.turn_cancel = None
         self.state = SessionState.IDLE
         self.query_one("#streaming", Static).update("")
         self.query_one("#streaming-scroll").display = False
@@ -289,6 +319,16 @@ class TermCodeApp(App[None]):
             self._provider_closed = True
             with suppress(Exception):
                 await asyncio.wait_for(self.provider.aclose(), timeout=2)
+
+    def action_cancel_turn(self) -> None:
+        if self.state == SessionState.STREAMING and self.turn_cancel is not None:
+            self.turn_cancel.set()
+
+    async def action_interrupt(self) -> None:
+        if self.state == SessionState.STREAMING:
+            self.action_cancel_turn()
+        else:
+            await self.action_quit()
 
     async def action_quit(self) -> None:
         self._quitting = True

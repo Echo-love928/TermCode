@@ -29,3 +29,22 @@
 - 快速输入和 Enter 都在输入控件的同一队列处理，避免优先快捷键抢在文本之前执行；新增了连续按键回归测试。
 - Python 3.12 的类型注解采用延迟求值；已在 Windows/Python 3.14 与 Linux/Python 3.12 验证。
 - 本目录尚未初始化 Git，当前无法按任务组创建提交。
+
+
+## ch04 Agent Loop
+
+本节以 `docs/ch04-Agent Loop/` 下的 Spec、Plan、Tasks、Checklist 为准；
+以上早期章节的单轮行为及失败回滚说明已由本章的循环与历史收尾规则替代。
+
+| 任务 | 状态 | 验证证据 |
+| --- | --- | --- |
+| T1 用量类型与流事件 | 完成 | 两协议 SDK 测试验证用量及无 usage 的兼容响应 |
+| T2 只读工具分类 | 完成 | 六工具分类、注册顺序、未知工具判定测试通过 |
+| T3 历史尾部角色 | 完成 | 空历史、user/assistant 尾部与取消配对测试通过 |
+| T4 系统提示 | 完成 | 持续工作提示、Plan 系统后缀及 /do 指令已接入 |
+| T5 双协议扩展 | 完成 | SDK/本地 HTTP 测试验证 system_suffix、usage 和三轮工具反馈 |
+| T6 ReAct 循环 | 完成 | 上限、未知工具计数重置、并发、取消、错误收尾等 18 项 Agent 测试通过 |
+| T7 TUI 接入 | 完成 | Pilot + tmux 验证轮次、用量、并发工具展示、Esc/Ctrl+C、/plan、/do |
+| T8 全量及端到端 | 完成 | Windows/Linux 全量各 106 passed；本地双协议 tmux 通过；授权后 deepseek/zhipu 真实多轮、Plan/Do、能力答复及取消恢复通过，四个会话退出码 0 |
+
+完整逐项证据及验证范围见 [ch04 验收记录](ch04-Agent%20Loop/Acceptance.md)。

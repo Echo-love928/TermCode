@@ -7,7 +7,7 @@ from openai import AsyncOpenAI, omit
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolUnionParam
 
 from termcode.config import ProviderConfig
-from termcode.llm import Message, StreamEvent, ToolCall, ToolDefinition
+from termcode.llm import Message, StreamEvent, ToolCall, ToolDefinition, Usage
 from termcode.prompt import SYSTEM_PROMPT
 
 
@@ -33,10 +33,14 @@ class OpenAIProvider:
         await self._client.close()
 
     async def stream(
-        self, msgs: list[Message], tools: list[ToolDefinition] | None = None
+        self,
+        msgs: list[Message],
+        tools: list[ToolDefinition] | None = None,
+        system_suffix: str = "",
     ) -> AsyncGenerator[StreamEvent, None]:
+        system = SYSTEM_PROMPT + ("\n\n" + system_suffix if system_suffix else "")
         messages: list[ChatCompletionMessageParam] = [
-            {"role": "system", "content": SYSTEM_PROMPT}
+            {"role": "system", "content": system}
         ]
         for message in msgs:
             if message.role == "user":
@@ -88,11 +92,18 @@ class OpenAIProvider:
                 model=self.model,
                 messages=messages,
                 stream=True,
+                stream_options={"include_usage": True},
                 tools=definitions if definitions else omit,
             )
             async with stream:
                 async for chunk in stream:
-                    # 用量等元数据事件可以不带 choices，不能将其视为文本。
+                    if chunk.usage is not None:
+                        yield StreamEvent(
+                            usage=Usage(
+                                chunk.usage.prompt_tokens, chunk.usage.completion_tokens
+                            )
+                        )
+                    # 用量元数据可以不带 choices，不能将其视为文本。
                     if not chunk.choices:
                         continue
                     choice = chunk.choices[0]

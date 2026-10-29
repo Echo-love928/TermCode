@@ -8,6 +8,8 @@ from termcode.tool import Result, arguments, string_schema
 
 
 class EditFileTool:
+    read_only = False
+
     def name(self) -> str:
         return "edit_file"
 

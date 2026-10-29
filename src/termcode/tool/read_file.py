@@ -8,6 +8,8 @@ from termcode.tool import TRUNCATED, Result, _truncate, arguments, string_schema
 
 
 class ReadFileTool:
+    read_only = True
+
     def name(self) -> str:
         return "read_file"
 

@@ -148,6 +148,8 @@ async def test_glob_grep_and_limits(tmp_path):
 
 async def test_registry_timeout_exception_and_cancellation():
     class Slow:
+        read_only = False
+
         def name(self):
             return "slow"
 
@@ -172,3 +174,15 @@ async def test_registry_timeout_exception_and_cancellation():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+def test_registry_read_only_classification():
+    registry = new_default_registry()
+    assert [d.name for d in registry.read_only_definitions()] == [
+        "read_file",
+        "glob",
+        "grep",
+    ]
+    assert not registry.is_read_only("missing")
+    for name in ("write_file", "edit_file", "bash"):
+        assert not registry.is_read_only(name)

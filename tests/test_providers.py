@@ -37,6 +37,10 @@ async def test_real_sdk_sse_history_thinking_and_headers(sse_server, protocol):
     text = "".join(event.text for event in events)
     assert "**你好**" in text and "```python" in text
     assert "HIDDEN_THINKING" not in text
+    usage = [e.usage for e in events if e.usage is not None]
+    assert len(usage) == 1
+    assert usage[0].input_tokens == (1 if protocol == "anthropic" else 12)
+    assert usage[0].output_tokens == 10
     request = sse_server.requests[0]
     body = request["body"]
     assert body["stream"] is True
@@ -109,3 +113,46 @@ async def test_cancellation_propagates(sse_server, protocol):
     finally:
         sse_server.gate.set()
         await provider.aclose()
+
+
+@pytest.mark.parametrize("protocol", ["anthropic", "openai"])
+async def test_plan_suffix_is_appended_to_system(sse_server, protocol):
+    from termcode.prompt import PLAN_MODE_REMINDER
+    from termcode.tool import new_default_registry
+
+    provider = new_provider(config(sse_server, protocol))
+    try:
+        events = [
+            e
+            async for e in provider.stream(
+                [Message("user", "制定计划")],
+                new_default_registry().read_only_definitions(),
+                PLAN_MODE_REMINDER,
+            )
+        ]
+    finally:
+        await provider.aclose()
+    assert events[-1].done
+    body = sse_server.requests[0]["body"]
+    system = (
+        body["system"] if protocol == "anthropic" else body["messages"][0]["content"]
+    )
+    assert system == SYSTEM_PROMPT + "\n\n" + PLAN_MODE_REMINDER
+    if protocol == "openai":
+        assert body["stream_options"] == {"include_usage": True}
+    names = [
+        t["name"] if protocol == "anthropic" else t["function"]["name"]
+        for t in body["tools"]
+    ]
+    assert names == ["read_file", "glob", "grep"]
+
+
+async def test_openai_compatible_endpoint_without_usage_still_works(sse_server):
+    sse_server.responses = [{"text": "兼容端点正文", "usage": False}]
+    provider = new_provider(config(sse_server, "openai"))
+    try:
+        events = [e async for e in provider.stream([Message("user", "你好")])]
+    finally:
+        await provider.aclose()
+    assert events[-1].done
+    assert not any(e.usage for e in events)

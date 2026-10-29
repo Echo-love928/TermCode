@@ -9,6 +9,8 @@ from termcode.tool import TRUNCATED, Result, _truncate, arguments, string_schema
 
 
 class GrepTool:
+    read_only = True
+
     def name(self) -> str:
         return "grep"
 

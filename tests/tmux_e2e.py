@@ -161,7 +161,10 @@ class TmuxRun:
         self.wait(lambda: bool(self.server.requests), "首轮请求")
         time.sleep(1.2)
         waiting = self.capture("anthropic", "anthropic-waiting")
-        assert "Imagining… (1s)" in waiting or "Imagining… (2s)" in waiting
+        assert (
+            "Imagining… (1s · 第 1 轮)" in waiting
+            or "Imagining… (2s · 第 1 轮)" in waiting
+        )
         assert "\n" in self.server.requests[0]["body"]["messages"][0]["content"]
         self.server.gate.set()
         self.wait(lambda: "**你好**" in self.capture("anthropic"), "纯文本流式增量")
@@ -213,17 +216,27 @@ class TmuxRun:
         self.capture("error", "error-authentication")
         self.server.mode = "normal"
         self.turn("error", "恢复后的正常请求")
-        assert len(self.server.requests[-1]["body"]["messages"]) == 2
+        assert len(self.server.requests[-1]["body"]["messages"]) == 4
         self.capture("error", "error-recovered")
         self.finish("error", work)
 
         self.server.gate.clear()
         work = self.start("ctrl-c", [self.entry("openai", "local-cancel")])
-        self.send("ctrl-c", "等待模型期间退出")
+        self.send("ctrl-c", "等待模型期间取消")
         self.key("ctrl-c", "Enter")
         self.wait(lambda: "Imagining" in self.capture("ctrl-c"), "等待期间 Ctrl+C")
-        self.finish("ctrl-c", work, ctrl_c=True)
+        self.key("ctrl-c", "C-c")
+        self.wait(
+            lambda: (
+                "已取消" in self.capture("ctrl-c")
+                and "Imagining" not in self.capture("ctrl-c")
+            ),
+            "取消且留在会话",
+        )
+        assert "TERMCODE_EXIT=" not in self.capture("ctrl-c")
         self.server.gate.set()
+        self.turn("ctrl-c", "取消后继续对话")
+        self.finish("ctrl-c", work, ctrl_c=True)
 
         requests = []
         for request in self.server.requests:

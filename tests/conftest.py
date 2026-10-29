@@ -33,6 +33,9 @@ class SSEServer:
                         },
                     }
                 )
+                if owner.mode == "connection_error":
+                    self.close_connection = True
+                    return
                 if owner.mode == "auth_error":
                     self.send_response(401)
                     self.send_header("Content-Type", "application/json")
@@ -139,6 +142,21 @@ class SSEServer:
                             }
                         )
                     chunk({}, "tool_calls" if calls else "stop")
+                    if response.get("usage", True):
+                        self.event(
+                            {
+                                "id": "chatcmpl-tool",
+                                "object": "chat.completion.chunk",
+                                "created": 1,
+                                "model": "test-model",
+                                "choices": [],
+                                "usage": {
+                                    "prompt_tokens": 12,
+                                    "completion_tokens": 10,
+                                    "total_tokens": 22,
+                                },
+                            }
+                        )
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
                     return
@@ -237,6 +255,11 @@ class SSEServer:
                         "created": 1,
                         "model": "test-model",
                         "choices": [],
+                        "usage": {
+                            "prompt_tokens": 12,
+                            "completion_tokens": 10,
+                            "total_tokens": 22,
+                        },
                     }
                 )
                 self.event(

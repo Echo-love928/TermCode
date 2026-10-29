@@ -13,7 +13,7 @@ from anthropic.types import (
 )
 
 from termcode.config import ProviderConfig
-from termcode.llm import Message, StreamEvent, ToolCall, ToolDefinition
+from termcode.llm import Message, StreamEvent, ToolCall, ToolDefinition, Usage
 from termcode.prompt import SYSTEM_PROMPT
 
 
@@ -39,8 +39,12 @@ class AnthropicProvider:
         await self._client.close()
 
     async def stream(
-        self, msgs: list[Message], tools: list[ToolDefinition] | None = None
+        self,
+        msgs: list[Message],
+        tools: list[ToolDefinition] | None = None,
+        system_suffix: str = "",
     ) -> AsyncGenerator[StreamEvent, None]:
+        system = SYSTEM_PROMPT + ("\n\n" + system_suffix if system_suffix else "")
         messages: list[MessageParam] = []
         for message in msgs:
             if message.role == "user":
@@ -96,7 +100,7 @@ class AnthropicProvider:
             async with self._client.messages.stream(
                 model=self.model,
                 max_tokens=4096,
-                system=SYSTEM_PROMPT,
+                system=system,
                 messages=messages,
                 thinking=thinking
                 if self._cfg.thinking and not has_tool_history
@@ -127,6 +131,13 @@ class AnthropicProvider:
                 if not calls:
                     raise RuntimeError("响应缺少工具调用内容")
                 yield StreamEvent(tool_calls=calls)
+            if final_message is not None:
+                yield StreamEvent(
+                    usage=Usage(
+                        final_message.usage.input_tokens,
+                        final_message.usage.output_tokens,
+                    )
+                )
             yield StreamEvent(done=True)
         except asyncio.CancelledError:
             raise

@@ -22,6 +22,10 @@ class Conversation:
     def messages(self) -> list[Message]:
         return list(self._messages)
 
+    def last_role(self) -> str:
+        """返回末条消息角色，空历史返回空字符串。"""
+        return self._messages[-1].role if self._messages else ""
+
     def discard_pending_user(self) -> None:
         """失败的请求不遗留未配对的用户消息，保证下一轮仍可正常对话。"""
         if self._messages and self._messages[-1].role == "user":

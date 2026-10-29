@@ -21,6 +21,9 @@ class Result:
 
 @runtime_checkable
 class Tool(Protocol):
+    @property
+    def read_only(self) -> bool: ...
+
     def name(self) -> str: ...
     def description(self) -> str: ...
     def parameters(self) -> dict[str, Any]: ...
@@ -80,6 +83,14 @@ class Registry:
             ToolDefinition(t.name(), t.description(), t.parameters())
             for t in self._tools.values()
         ]
+
+    def read_only_definitions(self) -> list[ToolDefinition]:
+        """仅导出只读工具，保留注册顺序。"""
+        return [d for d in self.definitions() if self.is_read_only(d.name)]
+
+    def is_read_only(self, name: str) -> bool:
+        tool = self.get(name)
+        return tool is not None and tool.read_only
 
     async def execute(
         self,

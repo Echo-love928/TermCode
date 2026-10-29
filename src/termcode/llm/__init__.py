@@ -47,11 +47,20 @@ class Message:
 
 
 @dataclass(frozen=True)
+class Usage:
+    """一次模型请求的输入和输出 token 用量。"""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass(frozen=True)
 class StreamEvent:
     text: str = ""
     done: bool = False
     err: Exception | None = None
     tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: Usage | None = None
 
 
 class Provider(Protocol):
@@ -62,8 +71,13 @@ class Provider(Protocol):
     def model(self) -> str: ...
 
     def stream(
-        self, msgs: list[Message], tools: list[ToolDefinition] | None = None
-    ) -> AsyncGenerator[StreamEvent, None]: ...
+        self,
+        msgs: list[Message],
+        tools: list[ToolDefinition] | None = None,
+        system_suffix: str = "",
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """系统后缀追加到内置提示；正常结束前返回本轮用量（若服务提供）。"""
+        ...
 
     async def aclose(self) -> None: ...
 

@@ -10,8 +10,11 @@ from termcode.llm import Message, ToolCall, ToolResult
 
 def test_history_and_copy():
     conv = Conversation()
+    assert conv.last_role() == ""
     conv.add_user("记住名字小林")
+    assert conv.last_role() == "user"
     conv.add_assistant("好的")
+    assert conv.last_role() == "assistant"
     conv.add_user("我的名字是什么？")
     messages = conv.messages()
     assert [m.role for m in messages] == ["user", "assistant", "user"]

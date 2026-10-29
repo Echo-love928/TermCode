@@ -73,9 +73,23 @@ def error_block(message: str, elapsed: float) -> Text:
     return Text(f"● 错误：{message}\n耗时 · {elapsed:.1f}s\n", style="bold red")
 
 
-def status_bar(name: str, model: str) -> Table:
+def compact_tokens(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}m"
+    if value >= 1000:
+        return f"{value / 1000:.1f}k"
+    return str(value)
+
+
+def status_bar(
+    name: str, model: str, plan: bool = False, usage_in: int = 0, usage_out: int = 0
+) -> Table:
     table = Table.grid(expand=True, padding=(0, 1))
     table.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
     table.add_column(ratio=1, justify="right", overflow="ellipsis", no_wrap=True)
-    table.add_row(Text(name, style="green"), Text(model, style="dim"))
+    label = Text(name, style="green")
+    if plan:
+        label.append(" PLAN", style="bold yellow")
+    usage = f"↑{compact_tokens(usage_in)} ↓{compact_tokens(usage_out)} tok"
+    table.add_row(label, Text(f"{model} · {usage}", style="dim"))
     return table

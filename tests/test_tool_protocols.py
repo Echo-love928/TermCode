@@ -33,6 +33,7 @@ async def test_protocol_fragmented_batch_and_result_feedback(
     ]
     sse_server.responses = [
         {"text": "先执行工具", "calls": calls},
+        {"calls": [call("read_file", id="c4", path=path)]},
         {"text": "已读取协议测试，第三个文件不存在。"},
     ]
     provider = new_provider(config(sse_server, protocol, thinking=True))
@@ -50,7 +51,10 @@ async def test_protocol_fragmented_batch_and_result_feedback(
     ]
     assert "协议测试" in conv.messages()[2].tool_results[1].content
     assert conv.messages()[2].tool_results[2].is_error
-    first, second = [r["body"] for r in sse_server.requests]
+    assert [e.iter for e in events if e.iter] == [1, 2, 3]
+    assert len([e for e in events if e.usage]) == 3
+    first, second, third = [r["body"] for r in sse_server.requests]
+    assert len(third["messages"]) > len(second["messages"])
     assert len(first["tools"]) == len(second["tools"]) == 6
     history = second["messages"]
     if protocol == "anthropic":
@@ -92,7 +96,7 @@ async def test_tui_tools_error_recovery_and_transcript(sse_server, protocol, tmp
         await app.submit("修改不存在的文本")
         await wait_for(lambda: app.state == SessionState.IDLE)
         assert "匹配到 0 处" in transcript(app)
-        assert app._cur_tool is None
+        assert app.cur_tools == []
         await app.submit("继续")
         await wait_for(lambda: app.state == SessionState.IDLE)
         assert "可以继续" in transcript(app)
@@ -107,6 +111,8 @@ async def test_tui_running_responsive_and_secrets_redacted(sse_server):
     release = asyncio.Event()
 
     class SlowTool:
+        read_only = False
+
         def name(self):
             return "slow"
 
@@ -137,7 +143,7 @@ async def test_tui_running_responsive_and_secrets_redacted(sse_server):
         assert "TEST_SECRET" not in status
         await pilot.press("pageup")
         await pilot.resize_terminal(40, 20)
-        assert app._cur_tool is not None
+        assert app.cur_tools
         release.set()
         await wait_for(lambda: app.state == SessionState.IDLE)
         assert "TEST_SECRET" not in transcript(app)
