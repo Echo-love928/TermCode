@@ -27,11 +27,12 @@ packages = ["src/termcode"]
 [tool.hatch.build.targets.sdist]
 include = [
   "/src", "/tests", "/docs", "/README.md", "/pyproject.toml", "/uv.lock",
-  "/.termcode/config.yaml.example",
+  "/.termcode/config.yaml.example", "/.termcode/settings.yaml.example",
+  "/examples", "/smoke",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=1", "ruff>=0.6", "mypy>=1.10", "types-PyYAML>=6"]
+dev = ["pytest>=8", "pytest-asyncio>=1", "pytest-timeout>=2", "ruff>=0.6", "mypy>=1.10", "types-PyYAML>=6"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

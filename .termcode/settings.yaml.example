@@ -1,0 +1,14 @@
+# 用户 ~/.termcode/settings.yaml、项目及本地 settings.local.yaml 三层合并。
+# 规则按 deny > ask > allow 裁决；默认模式按 本地 > 项目 > 用户 选择。
+# 只读默认允许；只读命中 ask 时拒绝，不弹出确认。
+default_mode: default
+permissions:
+  allow:
+    - Bash(git *)
+    - Bash(pytest)
+  ask:
+    - Bash(git push*)
+  deny:
+    - Bash(rm *)
+    - Read(.env)
+    - Write(.env)

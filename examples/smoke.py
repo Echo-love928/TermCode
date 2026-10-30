@@ -11,10 +11,11 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from termcode import __version__
-from termcode.agent import Agent, Mode
+from termcode.agent import Agent, ApprovalRequest
 from termcode.config import load
 from termcode.conversation import Conversation
 from termcode.llm import Message, Provider, Request, System, Usage, new_provider
+from termcode.permission import Mode, Outcome, new_engine
 from termcode.tool import new_default_registry
 
 
@@ -92,8 +93,9 @@ async def run(args: argparse.Namespace) -> int:
     check = getattr(args, "check_cache", False)
     provider = new_provider(replace(cfg, thinking=False) if check else cfg)
     conv = Conversation()
-    agent = Agent(provider, new_default_registry(), __version__)
-    mode = Mode.PLAN if args.plan else Mode.NORMAL
+    engine, _ = new_engine(str(Path.cwd()))
+    agent = Agent(provider, new_default_registry(), __version__, engine)
+    mode = Mode.PLAN if args.plan else Mode.BYPASS
 
     def output(text: str) -> None:
         print(text.replace(cfg.api_key, "[已隐藏密钥]"), flush=True)
@@ -109,6 +111,11 @@ async def run(args: argparse.Namespace) -> int:
             reply: list[str] = []
             async with aclosing(agent.run(conv, mode)) as stream:
                 async for event in stream:
+                    if isinstance(event, ApprovalRequest):
+                        output("非交互模式无法确认，已拒绝本次工具调用。")
+                        if not event.respond.done():
+                            event.respond.set_result(Outcome.DENY_ONCE)
+                        continue
                     if event.usage:
                         output(
                             json.dumps(

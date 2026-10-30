@@ -9,6 +9,9 @@ from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
+from termcode.agent import ApprovalRequest
+from termcode.permission import Mode
+
 
 def clean_text(text: str, secrets: Iterable[str] = ()) -> str:
     text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
@@ -81,15 +84,33 @@ def compact_tokens(value: int) -> str:
     return str(value)
 
 
-def status_bar(
-    name: str, model: str, plan: bool = False, usage_in: int = 0, usage_out: int = 0
-) -> Table:
+def status_bar(mode: Mode, model: str, usage_in: int = 0, usage_out: int = 0) -> Table:
     table = Table.grid(expand=True, padding=(0, 1))
     table.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
     table.add_column(ratio=1, justify="right", overflow="ellipsis", no_wrap=True)
-    label = Text(name, style="green")
-    if plan:
-        label.append(" PLAN", style="bold yellow")
+    labels = {
+        Mode.DEFAULT: ("DEFAULT", "green"),
+        Mode.ACCEPT_EDITS: ("ACCEPT EDITS", "green"),
+        Mode.PLAN: ("PLAN", "bold yellow"),
+        Mode.BYPASS: ("BYPASS", "bold red"),
+    }
+    title, style = labels[mode]
+    label = Text(title, style=style)
     usage = f"↑{compact_tokens(usage_in)} ↓{compact_tokens(usage_out)} tok"
     table.add_row(label, Text(f"{model} · {usage}", style="dim"))
     return table
+
+
+def approval_block(request: ApprovalRequest, cursor: int) -> Text:
+    block = Text("● " + request.name + "\n", style="bold cyan")
+    block.append("  " + request.args + "\n", style="default")
+    block.append("  " + request.reason + "\n", style="dim")
+    block.append("是否继续?\n", style="bold")
+    for index, title in enumerate(("允许本次", "永久允许（写入本地配置）", "拒绝本次")):
+        selected = index == cursor
+        block.append(
+            f"{'> ' if selected else '  '}{index + 1}. {title}\n",
+            style="bold reverse" if selected else "default",
+        )
+    block.append("↑↓ 选择 · 回车确认 · Esc 取消", style="dim")
+    return block

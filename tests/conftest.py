@@ -1,11 +1,18 @@
 """本地 HTTP 服务直接向官方 SDK 提供 SSE，不访问外部模型。"""
 
+import importlib
 import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+
+
+def pytest_sessionstart(session):
+    # WSL 挂载盘首次加载 SDK 较慢，放在计时用例前完成，超时只衡量测试行为。
+    for module in ("openai", "anthropic"):
+        importlib.import_module(module)
 
 
 class SSEServer:

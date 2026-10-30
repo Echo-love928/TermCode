@@ -1,15 +1,18 @@
 """协议无关的 ReAct 循环编排与保序分批并发。"""
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass
-from enum import Enum, IntEnum
+from enum import Enum
+from pathlib import Path
 
 from termcode import __version__, prompt
 from termcode.conversation import Conversation
 from termcode.llm import Provider, Request, System, ToolCall, ToolDefinition, ToolResult
 from termcode.llm import Usage as LLMUsage
+from termcode.permission import Decision, Engine, Mode, Outcome, new_engine
 from termcode.tool import Registry
 
 MAX_ITERATIONS = 25
@@ -25,11 +28,6 @@ EMPTY_REPLY = "（模型未返回正文）"
 class Phase(Enum):
     START = "start"
     END = "end"
-
-
-class Mode(IntEnum):
-    NORMAL = 0
-    PLAN = 1
 
 
 @dataclass(frozen=True)
@@ -61,11 +59,19 @@ class Event:
     notice: str = ""
 
 
+@dataclass(frozen=True)
+class ApprovalRequest:
+    name: str
+    args: str
+    reason: str
+    respond: asyncio.Future[Outcome]
+
+
 class _TurnCancelled(Exception):
     """本轮取消，由主循环统一维护历史并收尾。"""
 
 
-Push = Callable[[Event], None]
+Push = Callable[[Event | ApprovalRequest], None]
 
 
 async def _until_cancel[T](operation: Awaitable[T], cancel: asyncio.Event) -> T:
@@ -94,21 +100,26 @@ def args_preview(call: ToolCall) -> str:
 
 class Agent:
     def __init__(
-        self, provider: Provider, registry: Registry, version: str = __version__
+        self,
+        provider: Provider,
+        registry: Registry,
+        version: str = __version__,
+        engine: Engine | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
         self._version = version
+        self.engine = engine if engine is not None else new_engine(str(Path.cwd()))[0]
 
     async def run(
         self,
         conv: Conversation,
-        mode: Mode = Mode.NORMAL,
+        mode: Mode = Mode.DEFAULT,
         cancel: asyncio.Event | None = None,
-    ) -> AsyncGenerator[Event, None]:
+    ) -> AsyncGenerator[Event | ApprovalRequest, None]:
         # 单个生产者独占历史；消费者提前关闭时仍等待其取消和配对收尾。
         cancel = cancel if cancel is not None else asyncio.Event()
-        queue: asyncio.Queue[Event | None] = asyncio.Queue()
+        queue: asyncio.Queue[Event | ApprovalRequest | None] = asyncio.Queue()
 
         async def produce() -> None:
             try:
@@ -240,6 +251,13 @@ class Agent:
                 if event.done:
                     return text, calls, usage
 
+    async def request_approval(
+        self, call: ToolCall, reason: str, cancel: asyncio.Event, push: Push
+    ) -> Outcome:
+        respond: asyncio.Future[Outcome] = asyncio.get_running_loop().create_future()
+        push(ApprovalRequest(call.name, args_preview(call), reason, respond))
+        return await _until_cancel(respond, cancel)
+
     async def _execute_batched(
         self,
         calls: list[ToolCall],
@@ -248,13 +266,31 @@ class Agent:
         cancel: asyncio.Event,
         push: Push,
     ) -> None:
-        async def run_one(index: int) -> None:
+        def check_one(index: int) -> tuple[Decision, str]:
             call = calls[index]
+            if self._registry.get(call.name) is None:
+                return Decision.DENY, "未知工具，安全拒绝：" + call.name
+            decision, reason = self.engine.check(
+                mode, call, self._registry.is_read_only(call.name)
+            )
+            if decision == Decision.DENY:
+                return decision, reason
             if mode == Mode.PLAN and not self._registry.is_read_only(call.name):
-                results[index] = ToolResult(
-                    call.id, "计划模式仅允许只读工具，请使用 /do 开始执行。", True
-                )
-                return
+                return Decision.DENY, "计划模式仅允许只读工具，请使用 /do 开始执行。"
+            return decision, reason
+
+        async def run_one(index: int, decision: Decision, reason: str) -> None:
+            call = calls[index]
+            if decision == Decision.ASK:
+                outcome = await self.request_approval(call, reason, cancel, push)
+                if outcome == Outcome.DENY_ONCE:
+                    results[index] = ToolResult(call.id, "用户拒绝本次工具调用", True)
+                    return
+                if outcome == Outcome.ALLOW_FOREVER:
+                    try:
+                        await asyncio.to_thread(self.engine.persist_local_allow, call)
+                    except Exception:
+                        logging.getLogger(__name__).warning("永久放行规则保存失败")
             result = await self._registry.execute(call.name, call.input)
             results[index] = ToolResult(call.id, result.content, result.is_error)
 
@@ -266,11 +302,18 @@ class Agent:
             if self._registry.is_read_only(calls[i].name):
                 while j < len(calls) and self._registry.is_read_only(calls[j].name):
                     j += 1
-            for call in calls[i:j]:
+            allowed: list[tuple[int, Decision, str]] = []
+            for k in range(i, j):
+                call = calls[k]
+                decision, reason = check_one(k)
                 push(Event(tool=ToolEvent(call.name, args_preview(call))))
+                if decision == Decision.DENY:
+                    results[k] = ToolResult(call.id, reason, True)
+                else:
+                    allowed.append((k, decision, reason))
             try:
                 await _until_cancel(
-                    asyncio.gather(*(run_one(k) for k in range(i, j))), cancel
+                    asyncio.gather(*(run_one(*entry) for entry in allowed)), cancel
                 )
             finally:
                 # 完成事件按调用顺序发出，避免并发完成时交错滚动记录。

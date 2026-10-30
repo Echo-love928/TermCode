@@ -90,7 +90,7 @@ class Registry:
 
     def is_read_only(self, name: str) -> bool:
         tool = self.get(name)
-        return tool is not None and tool.read_only
+        return tool is not None and getattr(tool, "read_only", False) is True
 
     async def execute(
         self,

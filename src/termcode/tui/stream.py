@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING
 from rich.text import Text
 
 from termcode import __version__
-from termcode.agent import NOTICE_CANCELLED, Agent, Phase
+from termcode.agent import NOTICE_CANCELLED, Agent, ApprovalRequest, Phase
+from termcode.permission import Outcome
 from termcode.tui.view import render_markdown, tool_line, tool_result_summary
 
 if TYPE_CHECKING:
@@ -23,11 +24,20 @@ async def consume_stream(app: TermCodeApp) -> None:
         return
     try:
         async with aclosing(
-            Agent(app.provider, app._tool_registry, __version__).run(
+            Agent(app.provider, app._tool_registry, __version__, app.engine).run(
                 app.conv, app.mode, app.turn_cancel
             )
         ) as stream:
             async for event in stream:
+                if isinstance(event, ApprovalRequest):
+                    from termcode.tui.app import SessionState
+
+                    app.pending = event
+                    app.approve_cursor = 0
+                    app.state = SessionState.APPROVING
+                    app.query_one("#input").blur()
+                    app._refresh_streaming_view()
+                    continue
                 if event.err is not None:
                     app._finish_with_error(event.err)
                     return
@@ -92,4 +102,30 @@ async def consume_stream(app: TermCodeApp) -> None:
 
 
 def tick(app: TermCodeApp) -> None:
+    app._refresh_streaming_view()
+
+
+def outcome_for_index(index: int) -> Outcome:
+    return (Outcome.ALLOW_ONCE, Outcome.ALLOW_FOREVER, Outcome.DENY_ONCE)[index]
+
+
+def update_approving(app: TermCodeApp, key: str) -> None:
+    from termcode.tui.app import SessionState
+
+    request = app.pending
+    if request is None or request.respond.done():
+        return
+    if key in {"up", "k", "down", "j"}:
+        app.approve_cursor = (
+            app.approve_cursor + (-1 if key in {"up", "k"} else 1)
+        ) % 3
+        app._refresh_streaming_view()
+        return
+    shortcuts = {"1": 0, "2": 1, "3": 2, "y": 0, "n": 2, "d": 2}
+    if key not in shortcuts and key not in {"enter", "space"}:
+        return
+    outcome = outcome_for_index(shortcuts.get(key, app.approve_cursor))
+    app.pending = None
+    app.state = SessionState.STREAMING
+    request.respond.set_result(outcome)
     app._refresh_streaming_view()

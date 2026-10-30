@@ -12,6 +12,7 @@ from textual.widgets import Static
 from termcode.agent import Agent
 from termcode.conversation import Conversation
 from termcode.llm import new_provider
+from termcode.permission import Mode
 from termcode.tool import new_default_registry
 from termcode.tui.app import SessionState, TermCodeApp
 from termcode.tui.view import tool_result_summary
@@ -40,7 +41,12 @@ async def test_protocol_fragmented_batch_and_result_feedback(
     conv = Conversation()
     conv.add_user("写入并读取文件")
     try:
-        events = [e async for e in Agent(provider, new_default_registry()).run(conv)]
+        events = [
+            e
+            async for e in Agent(provider, new_default_registry()).run(
+                conv, Mode.BYPASS
+            )
+        ]
     finally:
         await provider.aclose()
     assert not any(e.err for e in events)
@@ -86,6 +92,7 @@ async def test_tui_tools_error_recovery_and_transcript(sse_server, protocol, tmp
         {"text": "可以继续。"},
     ]
     app = TermCodeApp([local_config(sse_server, protocol)])
+    app.mode = Mode.ACCEPT_EDITS
     async with app.run_test(size=(90, 36)) as pilot:
         await app.submit("读文件并总结")
         await wait_for(lambda: app.state == SessionState.IDLE)
@@ -114,7 +121,7 @@ async def test_tui_running_responsive_and_secrets_redacted(sse_server):
         read_only = False
 
         def name(self):
-            return "slow"
+            return "bash"
 
         def description(self):
             return "测试进行中指示"
@@ -130,16 +137,17 @@ async def test_tui_running_responsive_and_secrets_redacted(sse_server):
     registry = Registry()
     registry.register(SlowTool())
     sse_server.responses = [
-        {"calls": [call("slow", value="TEST_SECRET")]},
+        {"calls": [call("bash", command="echo safe", value="TEST_SECRET")]},
         {"text": "完成"},
     ]
     app = TermCodeApp([local_config(sse_server)], registry=registry)
+    app.mode = Mode.BYPASS
     async with app.run_test() as pilot:
         await app.submit("慢工具")
         await asyncio.wait_for(entered.wait(), 5)
         await pilot.pause(0.2)
         status = str(app.query_one("#streaming", Static).content)
-        assert "Running…" in status and "slow(" in status
+        assert "Running…" in status and "bash(" in status
         assert "TEST_SECRET" not in status
         await pilot.press("pageup")
         await pilot.resize_terminal(40, 20)
@@ -154,3 +162,8 @@ def test_error_summary_is_visibly_red():
     summary = tool_result_summary("bad", is_error=True)
     assert isinstance(summary.renderable, Text)
     assert summary.renderable.style == "red"
+
+
+@pytest.fixture(autouse=True)
+def isolated_permission_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)

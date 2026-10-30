@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 from contextlib import suppress
+from dataclasses import replace
 from enum import Enum
 
 from rich.console import Console, RenderableType
@@ -17,10 +18,11 @@ from textual.timer import Timer
 from textual.widgets import OptionList, RichLog, Static, TextArea
 
 from termcode import __version__
-from termcode.agent import Mode, ToolEvent
+from termcode.agent import ApprovalRequest, ToolEvent
 from termcode.config import ProviderConfig
 from termcode.conversation import Conversation
 from termcode.llm import Provider, new_provider
+from termcode.permission import Engine, Mode, Outcome, new_engine
 from termcode.prompt import EXECUTE_DIRECTIVE, StartupBanner
 from termcode.tool import Registry, new_default_registry
 from termcode.tui.banner import (
@@ -31,8 +33,9 @@ from termcode.tui.banner import (
     print_banner_image,
 )
 from termcode.tui.select import provider_list
-from termcode.tui.stream import consume_stream, tick
+from termcode.tui.stream import consume_stream, tick, update_approving
 from termcode.tui.view import (
+    approval_block,
     clean_text,
     error_block,
     error_message,
@@ -46,6 +49,11 @@ class SessionState(Enum):
     SELECTING = "selecting"
     IDLE = "idle"
     STREAMING = "streaming"
+    APPROVING = "approving"
+
+
+def next_mode(mode: Mode) -> Mode:
+    return Mode((int(mode) + 1) % len(Mode))
 
 
 class ChatInput(TextArea):
@@ -55,6 +63,9 @@ class ChatInput(TextArea):
             self.text = text
 
     def on_key(self, event: events.Key) -> None:
+        if event.key == "shift+tab":
+            # 交给应用级模式绑定，不让编辑器将其解释为反向缩进。
+            return
         # 与普通字符在同一控件队列中处理，避免优先绑定抢在粘贴文本之前执行。
         if event.key in {"enter", "alt+enter"}:
             event.stop()
@@ -79,6 +90,7 @@ class TermCodeApp(App[None]):
     BINDINGS = [
         Binding("ctrl+c", "interrupt", "取消或退出", priority=True),
         Binding("escape", "cancel_turn", "取消本轮", priority=True),
+        Binding("shift+tab", "next_mode", "切换权限模式", priority=True),
         Binding("pageup", "history_up", "向上翻页", priority=True),
         Binding("pagedown", "history_down", "向下翻页", priority=True),
     ]
@@ -100,7 +112,10 @@ class TermCodeApp(App[None]):
     """
 
     def __init__(
-        self, providers: list[ProviderConfig], registry: Registry | None = None
+        self,
+        providers: list[ProviderConfig],
+        registry: Registry | None = None,
+        engine: Engine | None = None,
     ) -> None:
         super().__init__()
         if not providers:
@@ -113,7 +128,10 @@ class TermCodeApp(App[None]):
             registry if registry is not None else new_default_registry()
         )
         self.cur_tools: list[ToolEvent] = []
-        self.mode = Mode.NORMAL
+        self.engine = engine if engine is not None else new_engine(os.getcwd())[0]
+        self.mode = self.engine.start_mode()
+        self.pending: ApprovalRequest | None = None
+        self.approve_cursor = 0
         self.iter = 0
         self.usage_in = 0
         self.usage_out = 0
@@ -200,9 +218,8 @@ class TermCodeApp(App[None]):
         if self.provider is not None:
             self.query_one("#statusbar", Static).update(
                 status_bar(
-                    self._clean(self.provider.name),
+                    self.mode,
                     self._clean(self.provider.model),
-                    self.mode == Mode.PLAN,
                     self.usage_in,
                     self.usage_out,
                 )
@@ -231,7 +248,7 @@ class TermCodeApp(App[None]):
             self._refresh_statusbar()
             return
         if text.strip() == "/do":
-            self.mode = Mode.NORMAL
+            self.mode = Mode.DEFAULT
             self.conv.add_user(EXECUTE_DIRECTIVE)
         else:
             self.conv.add_user(text)
@@ -249,6 +266,17 @@ class TermCodeApp(App[None]):
         self._stream_task = asyncio.create_task(consume_stream(self))
 
     def _refresh_streaming_view(self) -> None:
+        if self.state == SessionState.APPROVING and self.pending is not None:
+            request = replace(
+                self.pending,
+                name=self._clean(self.pending.name),
+                args=self._clean(self.pending.args),
+                reason=self._clean(self.pending.reason),
+            )
+            self.query_one("#streaming", Static).update(
+                approval_block(request, self.approve_cursor)
+            )
+            return
         if self.state != SessionState.STREAMING:
             return
         elapsed = int(time.monotonic() - self.turn_start)
@@ -297,6 +325,7 @@ class TermCodeApp(App[None]):
         self.cur_tools = []
         self.iter = 0
         self.turn_cancel = None
+        self.pending = None
         self.state = SessionState.IDLE
         self.query_one("#streaming", Static).update("")
         self.query_one("#streaming-scroll").display = False
@@ -321,11 +350,28 @@ class TermCodeApp(App[None]):
                 await asyncio.wait_for(self.provider.aclose(), timeout=2)
 
     def action_cancel_turn(self) -> None:
-        if self.state == SessionState.STREAMING and self.turn_cancel is not None:
+        if (
+            self.state in (SessionState.STREAMING, SessionState.APPROVING)
+            and self.turn_cancel is not None
+        ):
+            if self.pending is not None and not self.pending.respond.done():
+                self.pending.respond.set_result(Outcome.DENY_ONCE)
             self.turn_cancel.set()
 
+    def action_next_mode(self) -> None:
+        if self.state == SessionState.IDLE:
+            self.mode = next_mode(self.mode)
+            self._write(Text(f"已切换到 {self.mode} 模式", style="dim"))
+            self._refresh_statusbar()
+
+    def on_key(self, event: events.Key) -> None:
+        if self.state == SessionState.APPROVING:
+            event.stop()
+            event.prevent_default()
+            update_approving(self, event.key)
+
     async def action_interrupt(self) -> None:
-        if self.state == SessionState.STREAMING:
+        if self.state in (SessionState.STREAMING, SessionState.APPROVING):
             self.action_cancel_turn()
         else:
             await self.action_quit()
@@ -340,7 +386,7 @@ class TermCodeApp(App[None]):
             with suppress(asyncio.CancelledError):
                 await self._stream_task
             self._stream_task = None
-        if self.state == SessionState.STREAMING:
+        if self.state in (SessionState.STREAMING, SessionState.APPROVING):
             if self.cur_reply:
                 self._write(
                     Text("● " + self._clean(self.cur_reply) + "\n[退出时未完成]")

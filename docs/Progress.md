@@ -67,3 +67,21 @@ Windows 全量 134 项通过；Linux 全量 133 项通过，另新增 smoke 测�
 该端点未提供缓存创建计数，不能满足 AC4 的正缓存创建计数观测要求；
 保留 Checklist 场景 1 未勾选，不推算或伪造写入量。
 逐项证据与具体结果见 [ch05 验收记录](ch05-System%20Prompt/Acceptance.md)。
+
+
+## ch06 权限系统
+
+T1–T13 已完成并验收。用户确认三层规则合并、deny > ask > allow；
+未知工具/畸形参数始终拒绝，只读 ask 规则按拒绝处理。四份文档中的冲突已同步。
+
+新增 permission 包，接入工具执行前四层判定和 agent 人在回路；
+TUI 支持 Shift+Tab 四模式、审批三选一、Esc/Ctrl+C 取消及常驻模式显示。
+永久规则精确写本地配置，保留原有规则和默认模式；provider 层没有改动。
+
+- Linux/Python 3.12：230 passed（开发模式、RuntimeWarning 升级为错误、30 秒超时）。
+- Windows/Python 3.14：228 passed、2 skipped；跳过分支均在 Linux 实测通过。
+- ruff check、ruff format --check、mypy 全部通过。
+- 两协议九个真实 tmux 场景通过，含永久授权退出重启后生效、plan/do、取消恢复。
+- 两个已配置真实模型均通过写审批、取消及恢复；`python -m smoke` 写文件不阻塞。
+
+逐项证据与验证范围见 [ch06 验收记录](ch06-Permission%20System/Acceptance.md)。

@@ -49,6 +49,39 @@ async def test_smoke_cache_output_and_fragmented_secret(monkeypatch, capsys):
     assert closed
 
 
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+async def test_smoke_explicit_ask_in_bypass_denied_without_blocking(
+    sse_server, protocol, tmp_path, monkeypatch, capsys
+):
+    from test_tool_protocols import call
+    from test_tui import local_config
+
+    monkeypatch.chdir(tmp_path)
+    directory = tmp_path / ".termcode"
+    directory.mkdir()
+    (directory / "settings.yaml").write_text(
+        "permissions:\n  ask: ['Write']\n", encoding="utf-8"
+    )
+    sse_server.responses = [
+        {"calls": [call("write_file", path="never.txt", content="never")]},
+        {"text": "工具被拒后继续回复"},
+    ]
+    spec = importlib.util.spec_from_file_location("smoke_ask_test", SMOKE_PATH)
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+    cfg = local_config(sse_server, protocol)
+    monkeypatch.setattr(smoke, "load", lambda path: SimpleNamespace(providers=[cfg]))
+    args = argparse.Namespace(
+        config="unused", provider=None, plan=False, messages=["请创建文件"]
+    )
+    assert await smoke.run(args) == 0
+    output = capsys.readouterr().out
+    assert "非交互模式无法确认" in output and "工具被拒后继续回复" in output
+    assert not (tmp_path / "never.txt").is_file()
+    assert "TEST_SECRET" not in output
+    assert len(sse_server.requests) == 2
+
+
 @pytest.mark.parametrize(
     ("write", "reported", "read", "status", "exit_code"),
     [

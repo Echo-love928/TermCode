@@ -15,17 +15,18 @@ from termcode.agent import (
     NOTICE_STREAM_ERR,
     NOTICE_UNKNOWN_TOOLS,
     Agent,
-    Mode,
     Phase,
 )
 from termcode.conversation import Conversation
 from termcode.llm import StreamEvent, ToolCall, Usage
+from termcode.permission import Mode
 from termcode.prompt import Environment, build_system_prompt, plan_reminder
 from termcode.tool import Registry, Result, new_default_registry
 
 
 @pytest.fixture(autouse=True)
-def isolated_environment(monkeypatch):
+def isolated_environment(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     # Agent 单测不依赖真实 git 耗时；实际采集与降级由 prompt/协议集成测试覆盖。
     monkeypatch.setattr(
         "termcode.prompt.gather_environment",
@@ -91,7 +92,9 @@ async def test_agent_multiround_read_write_history_and_final(tmp_path):
         ]
     )
     conv = conversation()
-    events = [e async for e in Agent(provider, new_default_registry()).run(conv)]
+    events = [
+        e async for e in Agent(provider, new_default_registry()).run(conv, Mode.BYPASS)
+    ]
     assert events[-1].done
     assert [e.iter for e in events if e.iter] == [1, 2, 3]
     assert [e.tool.phase for e in events if e.tool] == [
@@ -122,7 +125,9 @@ async def test_agent_multiround_read_write_history_and_final(tmp_path):
 async def test_iteration_limit():
     provider = FakeProvider([response(call("1", "read_file"))], repeat=True)
     conv = conversation()
-    events = [e async for e in Agent(provider, new_default_registry()).run(conv)]
+    events = [
+        e async for e in Agent(provider, new_default_registry()).run(conv, Mode.BYPASS)
+    ]
     assert len(provider.requests) == MAX_ITERATIONS
     assert any(e.notice == NOTICE_MAX_ITER for e in events)
     assert events[-1].done
@@ -132,7 +137,9 @@ async def test_iteration_limit():
 async def test_unknown_limit_and_reset():
     provider = FakeProvider([response(call("x", "missing"))], repeat=True)
     conv = conversation()
-    events = [e async for e in Agent(provider, new_default_registry()).run(conv)]
+    events = [
+        e async for e in Agent(provider, new_default_registry()).run(conv, Mode.BYPASS)
+    ]
     assert len(provider.requests) == MAX_UNKNOWN_RUN
     assert any(e.notice == NOTICE_UNKNOWN_TOOLS for e in events)
     assert_paired(conv)
@@ -145,7 +152,10 @@ async def test_unknown_limit_and_reset():
         ]
     )
     events = [
-        e async for e in Agent(provider, new_default_registry()).run(conversation())
+        e
+        async for e in Agent(provider, new_default_registry()).run(
+            conversation(), Mode.BYPASS
+        )
     ]
     assert events[-1].done
     assert not any(e.notice for e in events)
@@ -193,17 +203,17 @@ async def test_concurrent_batch(repeat):
         return Result(args)
 
     registry = Registry()
-    registry.register(ProbeTool("ro", True, read))
-    registry.register(ProbeTool("rw", False, write))
+    registry.register(ProbeTool("read_file", True, read))
+    registry.register(ProbeTool("write_file", False, write))
     calls = [
-        call("1", "ro", n=1),
-        call("2", "ro", n=2),
-        call("3", "rw"),
-        call("4", "ro", n=3),
+        call("1", "read_file", path=".", n=1),
+        call("2", "read_file", path=".", n=2),
+        call("3", "write_file", path="probe.txt"),
+        call("4", "read_file", path=".", n=3),
     ]
     provider = FakeProvider([response(*calls), response(text="完成")])
     conv = conversation()
-    events = [e async for e in Agent(provider, registry).run(conv)]
+    events = [e async for e in Agent(provider, registry).run(conv, Mode.BYPASS)]
     assert peak == 2
     assert order == ["read", "read", "write", "read"]
     assert [r.tool_call_id for r in conv.messages()[2].tool_results] == [
@@ -236,10 +246,14 @@ async def test_tool_cancel_pairs_all_calls_and_continues_without_leaks():
             released.set()
 
     registry = Registry()
-    registry.register(ProbeTool("slow", True, slow))
+    registry.register(ProbeTool("read_file", True, slow))
     provider = FakeProvider(
         [
-            response(call("1", "slow"), call("2", "slow"), call("3", "missing")),
+            response(
+                call("1", "read_file", path="."),
+                call("2", "read_file", path="."),
+                call("3", "missing"),
+            ),
             response(text="继续成功"),
         ]
     )
@@ -248,7 +262,7 @@ async def test_tool_cancel_pairs_all_calls_and_continues_without_leaks():
     before = set(asyncio.all_tasks())
 
     async def consume():
-        return [e async for e in agent.run(conv, Mode.NORMAL, cancel)]
+        return [e async for e in agent.run(conv, Mode.DEFAULT, cancel)]
 
     task = asyncio.create_task(consume())
     await asyncio.wait_for(entered.wait(), 1)
@@ -262,7 +276,7 @@ async def test_tool_cancel_pairs_all_calls_and_continues_without_leaks():
     )
     assert conv.messages()[-1].content == NOTICE_CANCELLED
     conv.add_user("继续")
-    assert [e async for e in agent.run(conv)][-1].done
+    assert [e async for e in agent.run(conv, Mode.BYPASS)][-1].done
     assert_paired(conv)
     assert set(asyncio.all_tasks()) <= before
 
@@ -289,7 +303,7 @@ async def test_cancel_stalled_stream_or_close_generator(early_close):
 
     async def consume():
         async with aclosing(
-            Agent(StalledProvider(), Registry()).run(conv, Mode.NORMAL, cancel)
+            Agent(StalledProvider(), Registry()).run(conv, Mode.DEFAULT, cancel)
         ) as stream:
             async for event in stream:
                 if event.text and early_close:
@@ -351,7 +365,9 @@ async def test_stream_error_closes_history_and_allows_followup(kind):
                 raise RuntimeError("断流")
 
     conv = conversation()
-    events = [e async for e in Agent(BrokenProvider(), Registry()).run(conv)]
+    events = [
+        e async for e in Agent(BrokenProvider(), Registry()).run(conv, Mode.BYPASS)
+    ]
     assert any(e.err is not None for e in events)
     assert any(e.notice == NOTICE_STREAM_ERR for e in events)
     assert not any(e.done for e in events)
@@ -359,7 +375,9 @@ async def test_stream_error_closes_history_and_allows_followup(kind):
     assert_paired(conv)
     conv.add_user("恢复")
     provider = FakeProvider([response(text="正常")])
-    assert [e async for e in Agent(provider, Registry()).run(conv)][-1].done
+    assert [e async for e in Agent(provider, Registry()).run(conv, Mode.BYPASS)][
+        -1
+    ].done
     assert_paired(conv)
 
 
@@ -371,14 +389,19 @@ async def test_failed_continuation_pairs_existing_tool_history():
         ]
     )
     conv = conversation()
-    events = [e async for e in Agent(provider, Registry()).run(conv)]
+    events = [e async for e in Agent(provider, Registry()).run(conv, Mode.BYPASS)]
     assert events[-1].err
     assert_paired(conv)
 
 
 async def test_empty_response_gets_nonempty_assistant():
     conv = conversation()
-    events = [e async for e in Agent(FakeProvider([response()]), Registry()).run(conv)]
+    events = [
+        e
+        async for e in Agent(FakeProvider([response()]), Registry()).run(
+            conv, Mode.BYPASS
+        )
+    ]
     assert events[-1].done
     assert conv.messages()[-1].content == EMPTY_REPLY
     assert any(e.text == EMPTY_REPLY for e in events)
@@ -424,7 +447,7 @@ async def test_request_modes_reminder_cadence_and_cache_passthrough(tmp_path):
     ] == (123, 456)
     assert [e.usage for e in events if e.usage][-1].cache_write_reported
     conv.add_user("继续执行")
-    assert [e async for e in agent.run(conv)][-1].done
+    assert [e async for e in agent.run(conv, Mode.BYPASS)][-1].done
     normal = provider.requests[-1]
     assert normal.system.stable == planned[0].system.stable
     assert len(normal.tools) == 6 and normal.reminder == ""
@@ -450,7 +473,10 @@ async def test_environment_collection_does_not_block_loop(monkeypatch):
     provider = FakeProvider([response(text="完成")])
 
     async def consume():
-        return [e async for e in Agent(provider, Registry()).run(conversation())]
+        return [
+            e
+            async for e in Agent(provider, Registry()).run(conversation(), Mode.BYPASS)
+        ]
 
     task = asyncio.create_task(consume())
     try:

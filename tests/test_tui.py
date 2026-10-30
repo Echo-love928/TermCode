@@ -180,7 +180,7 @@ async def test_burst_input_is_processed_before_enter(sse_server):
 async def test_plan_do_mode_usage_and_multiround_ui(sse_server, protocol, tmp_path):
     import json
 
-    from termcode.agent import Mode
+    from termcode.permission import Mode
     from termcode.prompt import EXECUTE_DIRECTIVE
 
     target = tmp_path / "planned.txt"
@@ -210,8 +210,10 @@ async def test_plan_do_mode_usage_and_multiround_ui(sse_server, protocol, tmp_pa
         first_usage = app.usage_in
         assert first_usage > 0 and app.usage_out == 20
         await app.submit("/do")
+        await wait_for(lambda: app.state == SessionState.APPROVING)
+        await pilot.press("1")
         await wait_for(lambda: app.state == SessionState.IDLE)
-        assert app.mode == Mode.NORMAL
+        assert app.mode == Mode.DEFAULT
         assert "PLAN" not in transcript_status(app)
         assert target.read_text(encoding="utf-8") == "计划摘要"
         assert app.usage_in > first_usage and app.usage_out == 50
@@ -247,3 +249,8 @@ async def test_cancel_then_resume_same_conversation(sse_server, key):
         await wait_for(lambda: app.state == SessionState.IDLE)
         assert len(app.conv.messages()) == 4
         assert len(sse_server.requests[-1]["body"]["messages"]) == 4
+
+
+@pytest.fixture(autouse=True)
+def isolated_permission_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)

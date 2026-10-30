@@ -117,6 +117,9 @@ uv run python tests/tmux_loop_e2e.py --live
 # ch05 系统提示、规划提醒、环境感知和非 git 目录
 uv run python tests/tmux_prompt_e2e.py
 uv run python tests/tmux_prompt_e2e.py --live
+# ch06 权限：双协议九场景（含永久授权重启验证）及真实模型审批/取消
+uv run python tests/tmux_permission_e2e.py
+uv run python tests/tmux_permission_e2e.py --live
 # 连发两条消息，打印 input/output/cache_write/cache_read
 uv run python examples/smoke.py --provider my-provider
 # 独立冷缓存诊断：只发送人工测试文本，不带项目提示、环境或工具
@@ -159,3 +162,21 @@ ch05 按 `docs/ch05-System Prompt/Checklist.md` 验收，
 - [OpenAI 前缀缓存与 cached_tokens](https://developers.openai.com/cookbook/examples/prompt_caching101)
 - [Textual App API 与 inline 模式](https://textual.textualize.io/api/app/)
 
+
+
+## 权限系统
+
+状态栏显示当前模式，空闲时按 Shift+Tab 循环切换 default、acceptEdits、plan、
+bypassPermissions。默认模式下写文件、改文件和执行命令需要确认；只读工具默认允许。
+`/plan` 进入只读规划，`/do` 返回 default 并按计划执行。
+
+审批菜单支持 ↑↓ / j/k 选择、回车或空格确认、数字键 1/2/3 直选。
+Esc/Ctrl+C 取消当前轮，仍可继续会话。“永久允许”生成本次具体命令或路径的精确规则。
+
+参考 `.termcode/settings.yaml.example` 配置权限。用户级 `~/.termcode/settings.yaml`、
+项目级 `.termcode/settings.yaml`、本地级 `.termcode/settings.local.yaml` 的规则合并，
+按 deny > ask > allow 判定；默认模式 `default_mode` 单独按本地 > 项目 > 用户选择。
+只读命中 ask 时直接拒绝；永久 allow 不会覆盖已有 ask/deny。
+项目规则可提交，本地授权文件已忽略。黑名单和项目路径边界在 bypass 下仍然生效。
+
+完整实现与验收范围见 [ch06 验收记录](docs/ch06-Permission%20System/Acceptance.md)。
