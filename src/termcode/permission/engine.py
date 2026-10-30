@@ -41,6 +41,7 @@ class Engine:
     local_path: str = ""
     _start_mode: Mode = Mode.DEFAULT
     root_valid: bool = True
+    mcp_tools: frozenset[str] = field(default_factory=frozenset)
 
     def start_mode(self) -> Mode:
         return self._start_mode
@@ -71,6 +72,9 @@ class Engine:
                 target = self.relative_target(target)
             except (OSError, RuntimeError, ValueError):
                 return Decision.DENY, "无法解析文件路径参数，安全拒绝"
+        elif call.name in self.mcp_tools:
+            # 仅 CLI 成功注册的 MCP 工具可复用规则和模式兜底。
+            pass
         elif call.name not in FRIENDLY_NAMES:
             return Decision.DENY, "未知工具，安全拒绝：" + call.name
         elif not ok:

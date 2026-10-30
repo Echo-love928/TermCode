@@ -85,3 +85,18 @@ TUI 支持 Shift+Tab 四模式、审批三选一、Esc/Ctrl+C 取消及常驻模
 - 两个已配置真实模型均通过写审批、取消及恢复；`python -m smoke` 写文件不阻塞。
 
 逐项证据与验证范围见 [ch06 验收记录](ch06-Permission%20System/Acceptance.md)。
+
+## ch07 MCP 客户端
+
+T1–T8 已实现并执行验证：新增 MCP 子包、两层 YAML 配置、环境变量展开、
+stdio / Streamable HTTP、官方 SDK 新旧协议协商、工具适配、CLI 注册与有界退出。
+按现有接口接入权限；只有已成功注册的 MCP 工具能够进入规则与模式判定。
+
+- Windows：283 passed、2 skipped；Linux：285 passed，RuntimeWarning 按错误处理。
+- ruff check、ruff format --check、全源码 mypy 与 sdist / wheel 构建通过。
+- 两协议 tmux 场景 1–8 及额外的审批取消恢复通过；8 次 CLI 退出码均为 0，终端恢复，子进程无残留。
+- 两个已配置真实模型均完成 MCP echo 审批、实际调用及续答。
+- **原方案偏差：permission 零修改未满足。** 现有引擎会拒绝扩展工具，已对 engine / rule / persist 做三处必要扩展，并保留未注册工具拒绝。
+- 可选 HTTP tmux 场景未运行；HTTP 已通过真实端点的集成测试，不冒充为 tmux 验收。
+
+逐项证据、实现差异与复现命令见 [ch07 验收记录](ch07-MCP%20Server/Acceptance.md)。

@@ -86,7 +86,7 @@ Windows 请使用 Windows Terminal 1.22 或更新版本；程序自动检测终�
   工具结果始终按调用顺序回灌。取消、错误或触达上限后补齐历史，可继续对话。
 - 工具超时默认为 30 秒；命令超时会清理子进程。读文件最多 2000 行或 256KB，
   命令分别保留最多 14KB stdout/stderr，glob/grep 最多 100 条结果。
-  本章工具没有授权确认或目录沙箱，请在需要操作的项目目录运行。
+  工具执行受下文权限系统约束，请在需要操作的项目目录运行。
 
 ## 开发与验证
 
@@ -120,6 +120,9 @@ uv run python tests/tmux_prompt_e2e.py --live
 # ch06 权限：双协议九场景（含永久授权重启验证）及真实模型审批/取消
 uv run python tests/tmux_permission_e2e.py
 uv run python tests/tmux_permission_e2e.py --live
+# ch07 MCP：双协议审批、重启、回退、环境展开和退出清理
+uv run python tests/tmux_mcp_e2e.py
+uv run python tests/tmux_mcp_e2e.py --live
 # 连发两条消息，打印 input/output/cache_write/cache_read
 uv run python examples/smoke.py --provider my-provider
 # 独立冷缓存诊断：只发送人工测试文本，不带项目提示、环境或工具
@@ -180,3 +183,37 @@ Esc/Ctrl+C 取消当前轮，仍可继续会话。“永久允许”生成本次
 项目规则可提交，本地授权文件已忽略。黑名单和项目路径边界在 bypass 下仍然生效。
 
 完整实现与验收范围见 [ch06 验收记录](docs/ch06-Permission%20System/Acceptance.md)。
+
+## MCP 外部工具
+
+启动时读取用户级 `~/.termcode/config.yaml` 和项目级 `.termcode.yaml` 的
+`mcp_servers`；同名 server 由项目级完整覆盖。供应商配置仍放在项目的
+`.termcode/config.yaml`。MCP 配置示例见
+[mcp-servers.example.yaml](docs/mcp/mcp-servers.example.yaml)。
+
+```yaml
+mcp_servers:
+  demo:
+    type: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-everything"]
+  remote:
+    type: http
+    url: "https://mcp.example.com/mcp"
+    headers:
+      Authorization: "Bearer ${MCP_TOKEN}"
+```
+
+`env` 和 `headers` 的值支持 `${VAR}`，未定义变量展开为空并告警；
+命令与参数不展开。配置改动需要重启。单个 server 的失败不会影响其它工具，
+所有连接并发启动，启动最多等待 30 秒。退出时统一关闭会话及子进程。
+
+工具名为 `mcp__<server>__<tool>`。默认模式下，远端明确标注只读的工具直接放行，
+其它工具需要确认。“永久允许”按工具全名保存，不按远端参数限制范围。
+权限规则支持精确名和 `mcp__demo__*` 通配名，deny / ask 仍优先于 allow。
+MCP 工具复用规则、模式和审批；本地文件沙箱与 Bash 黑名单只作用于内置工具。
+
+仅回灌文本内容；非文本内容会丢弃并按工具告警一次。调用超时和远端错误
+作为错误结果回灌，模型可以继续处理。暂不支持热加载、重连及 OAuth 交互。
+
+实现差异和逐项证据见 [ch07 验收记录](docs/ch07-MCP%20Server/Acceptance.md)。

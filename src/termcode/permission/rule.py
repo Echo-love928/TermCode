@@ -19,7 +19,11 @@ class Rule:
 def parse_rule(value: str) -> tuple[Rule, bool]:
     if not isinstance(value, str):
         return Rule(""), False
-    match = re.fullmatch(r"([A-Za-z_][\w]*)(?:\((.*)\))?", value.strip(), re.DOTALL)
+    match = re.fullmatch(
+        r"(mcp__[A-Za-z0-9_*\-]+|[A-Za-z_][\w]*)(?:\((.*)\))?",
+        value.strip(),
+        re.DOTALL,
+    )
     if match is None:
         return Rule(""), False
     pattern = match[2] or ""
@@ -72,7 +76,12 @@ class RuleSet:
             (Decision.ALLOW, self.allow),
         ):
             for rule in rules:
-                if rule.tool == friendly and match_pattern(
+                tool_matches = rule.tool == friendly or (
+                    friendly.startswith("mcp__")
+                    and rule.tool.startswith("mcp__")
+                    and match_pattern(rule.tool, friendly)
+                )
+                if tool_matches and match_pattern(
                     rule.pattern, target, is_file=friendly != "Bash"
                 ):
                     return decision, rule

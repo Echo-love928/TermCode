@@ -19,6 +19,11 @@ if TYPE_CHECKING:
 
 
 def rule_for(engine: Engine, call: ToolCall) -> tuple[Rule, str, bool]:
+    if call.name in engine.mcp_tools:
+        # MCP 权限按工具全名保存，不把远端参数误当本地路径或命令。
+        rule = Rule(call.name, allow=True)
+        _, valid = parse_rule(str(rule))
+        return rule, str(rule), valid
     target, is_file, ok = extract_target(call)
     if not ok or (is_file and not sandbox_ok(engine, target)):
         return Rule(""), "", False
