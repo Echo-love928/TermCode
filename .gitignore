@@ -9,6 +9,7 @@ __pycache__/
 dist/
 *.egg-info/
 .termcode/config.yaml
+.termcode/sessions/
 .termcode/settings.local.yaml
 
 # 本机配置、凭据和编辑器工作区

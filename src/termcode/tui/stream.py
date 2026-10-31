@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING
 
 from rich.text import Text
 
-from termcode import __version__
-from termcode.agent import NOTICE_CANCELLED, Agent, ApprovalRequest, Phase
+from termcode.agent import NOTICE_CANCELLED, ApprovalRequest, Phase
 from termcode.permission import Outcome
+from termcode.tui.commands import format_compact_notice
 from termcode.tui.view import render_markdown, tool_line, tool_result_summary
 
 if TYPE_CHECKING:
@@ -24,9 +24,7 @@ async def consume_stream(app: TermCodeApp) -> None:
         return
     try:
         async with aclosing(
-            Agent(app.provider, app._tool_registry, __version__, app.engine).run(
-                app.conv, app.mode, app.turn_cancel
-            )
+            app._ensure_agent().run(app.conv, app.mode, app.turn_cancel)
         ) as stream:
             async for event in stream:
                 if isinstance(event, ApprovalRequest):
@@ -37,6 +35,15 @@ async def consume_stream(app: TermCodeApp) -> None:
                     app.state = SessionState.APPROVING
                     app.query_one("#input").blur()
                     app._refresh_streaming_view()
+                    continue
+                if event.compact is not None:
+                    # 同一 UI 事件循环直接显示，摘要网络请求不会阻塞提示渲染。
+                    app._write(
+                        Text(
+                            app._clean(format_compact_notice(event.compact)),
+                            style="dim",
+                        )
+                    )
                     continue
                 if event.err is not None:
                     app._finish_with_error(event.err)

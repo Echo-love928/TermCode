@@ -18,12 +18,12 @@ from textual.timer import Timer
 from textual.widgets import OptionList, RichLog, Static, TextArea
 
 from termcode import __version__
-from termcode.agent import ApprovalRequest, ToolEvent
-from termcode.config import ProviderConfig
+from termcode.agent import Agent, ApprovalRequest, SessionRuntime, ToolEvent
+from termcode.config import ProviderConfig, effective_context_window
 from termcode.conversation import Conversation
 from termcode.llm import Provider, new_provider
 from termcode.permission import Engine, Mode, Outcome, new_engine
-from termcode.prompt import EXECUTE_DIRECTIVE, StartupBanner
+from termcode.prompt import StartupBanner
 from termcode.tool import Registry, new_default_registry
 from termcode.tui.banner import (
     BannerArtwork,
@@ -32,6 +32,7 @@ from termcode.tui.banner import (
     graphics_available,
     print_banner_image,
 )
+from termcode.tui.commands import dispatch_command
 from termcode.tui.select import provider_list
 from termcode.tui.stream import consume_stream, tick, update_approving
 from termcode.tui.view import (
@@ -116,12 +117,17 @@ class TermCodeApp(App[None]):
         providers: list[ProviderConfig],
         registry: Registry | None = None,
         engine: Engine | None = None,
+        *,
+        runtime: SessionRuntime | None = None,
     ) -> None:
         super().__init__()
         if not providers:
             raise ValueError("至少需要一项供应商配置")
         self.providers = providers
         self.provider: Provider | None = None
+        self.agent: Agent | None = None
+        self.runtime = runtime if runtime is not None else SessionRuntime()
+        self._manual_compact = False
         self.state = SessionState.SELECTING
         self.conv = Conversation()
         self._tool_registry = (
@@ -208,11 +214,27 @@ class TermCodeApp(App[None]):
 
     def _activate_provider(self, index: int) -> None:
         self.provider = new_provider(self.providers[index])
+        self.runtime.context_window = effective_context_window(self.providers[index])
+        self.agent = None
+        self._ensure_agent()
         self._provider_closed = False
         self.state = SessionState.IDLE
         self._show_selection(False)
         self._refresh_statusbar()
         self.query_one("#input", ChatInput).focus()
+
+    def _ensure_agent(self) -> Agent:
+        if self.agent is None:
+            if self.provider is None:
+                raise RuntimeError("尚未选择供应商")
+            self.agent = Agent(
+                self.provider,
+                self._tool_registry,
+                __version__,
+                self.engine,
+                runtime=self.runtime,
+            )
+        return self.agent
 
     def _refresh_statusbar(self) -> None:
         if self.provider is not None:
@@ -237,21 +259,17 @@ class TermCodeApp(App[None]):
     async def submit(self, text: str) -> None:
         if self.state != SessionState.IDLE or self._quitting or not text.strip():
             return
-        if text.strip() == "/exit":
-            await self.action_quit()
-            return
         editor = self.query_one("#input", ChatInput)
         editor.clear()
-        if text.strip() == "/plan":
-            self.mode = Mode.PLAN
-            self._write(Text("已进入计划模式（只读工具）；/do 开始执行。", style="dim"))
-            self._refresh_statusbar()
+        handler, command = dispatch_command(text)
+        if command and handler is not None:
+            await handler(self)
             return
-        if text.strip() == "/do":
-            self.mode = Mode.DEFAULT
-            self.conv.add_user(EXECUTE_DIRECTIVE)
-        else:
-            self.conv.add_user(text)
+        self.conv.add_user(text)
+        self._begin_turn(text)
+
+    def _begin_turn(self, text: str) -> None:
+        editor = self.query_one("#input", ChatInput)
         self._write(user_block(self._clean(text)))
         self._refresh_statusbar()
         self.turn_cancel = asyncio.Event()
@@ -357,6 +375,8 @@ class TermCodeApp(App[None]):
             if self.pending is not None and not self.pending.respond.done():
                 self.pending.respond.set_result(Outcome.DENY_ONCE)
             self.turn_cancel.set()
+            if self._manual_compact and self._stream_task is not None:
+                self._stream_task.cancel()
 
     def action_next_mode(self) -> None:
         if self.state == SessionState.IDLE:

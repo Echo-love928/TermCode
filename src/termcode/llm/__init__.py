@@ -11,6 +11,10 @@ ROLE_ASSISTANT = "assistant"
 ROLE_TOOL = "tool"
 
 
+class PromptTooLongError(Exception):
+    """供应商上报输入超出上下文窗口时的统一异常。"""
+
+
 @dataclass(frozen=True)
 class ToolCall:
     """流式拼接完成的工具调用，保留原始 JSON 参数。"""
@@ -67,9 +71,10 @@ class System:
 @dataclass(frozen=True)
 class Request:
     messages: list[Message] = field(default_factory=list)
-    tools: list[ToolDefinition] = field(default_factory=list)
+    tools: list[ToolDefinition] | None = field(default_factory=list)
     system: System = field(default_factory=System)
     reminder: str = ""
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True)

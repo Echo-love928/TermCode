@@ -8,6 +8,20 @@ from pathlib import Path
 import pytest
 
 
+def test_cli_help_without_configuration(tmp_path):
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    result = subprocess.run(
+        [sys.executable, "-m", "termcode", "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 0
+    assert b"--version" in result.stdout
+
+
 @pytest.mark.parametrize(
     "content,expected",
     [

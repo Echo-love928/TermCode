@@ -9,6 +9,12 @@ from termcode.config import ConfigError, load
 
 
 def main() -> None:
+    if sys.argv[1:] in (["--help"], ["-h"]):
+        print(
+            "用法: termcode [--help | --version]\n"
+            "从当前目录的 .termcode/config.yaml 启动对话。"
+        )
+        return
     if sys.argv[1:] == ["--version"]:
         from termcode import __version__
 
@@ -28,6 +34,9 @@ def main() -> None:
 
 async def _run(config: ProviderConfig) -> None:
     from termcode import __version__
+    from termcode.agent import SessionRuntime
+    from termcode.compact import new_session_context
+    from termcode.config import effective_context_window
     from termcode.mcp import load_config, new_manager
     from termcode.permission import new_engine
     from termcode.tool import new_default_registry
@@ -36,6 +45,10 @@ async def _run(config: ProviderConfig) -> None:
 
     configure_terminal_keys()
     root = str(Path.cwd())
+    runtime = SessionRuntime(
+        session=new_session_context(root),
+        context_window=effective_context_window(config.providers[0]),
+    )
     registry = new_default_registry()
     manager = await new_manager(load_config(root), __version__)
     try:
@@ -45,7 +58,9 @@ async def _run(config: ProviderConfig) -> None:
         engine.mcp_tools = frozenset(tool.name() for tool in manager.tools())
         if err is not None:
             print("权限引擎降级：无法解析项目根目录", file=sys.stderr)
-        app = TermCodeApp(config.providers, registry=registry, engine=engine)
+        app = TermCodeApp(
+            config.providers, registry=registry, engine=engine, runtime=runtime
+        )
         try:
             await app.run_async(inline=True)
         except KeyboardInterrupt:

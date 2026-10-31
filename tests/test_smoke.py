@@ -26,7 +26,7 @@ async def test_smoke_cache_output_and_fragmented_secret(monkeypatch, capsys):
             closed = True
 
     class Agent:
-        def __init__(self, *args):
+        def __init__(self, *args, **kwargs):
             pass
 
         async def run(self, *args):
@@ -34,7 +34,9 @@ async def test_smoke_cache_output_and_fragmented_secret(monkeypatch, capsys):
             yield Event(text="SECRET")
             yield Event(usage=Usage(10, 5, 100, 80), done=True)
 
-    cfg = SimpleNamespace(name="test", api_key="TEST_SECRET")
+    cfg = SimpleNamespace(
+        name="test", api_key="TEST_SECRET", protocol="openai", context_window=0
+    )
     monkeypatch.setattr(smoke, "load", lambda p: SimpleNamespace(providers=[cfg]))
     monkeypatch.setattr(smoke, "new_provider", lambda c: Provider())
     monkeypatch.setattr(smoke, "Agent", Agent)

@@ -54,3 +54,24 @@ def test_conversation_copies_tool_lists():
     ]
     assert conv.messages()[1].tool_calls and conv.messages()[2].tool_results
     assert Message("user", "hello").tool_calls == []
+
+
+def test_replace_history_deep_copy():
+    conv = Conversation()
+    original = [Message("assistant", tool_calls=[ToolCall("a", "read", "{}")])]
+    conv.replace_history(original)
+    original[0].tool_calls.clear()
+    original.clear()
+    returned = conv.messages()
+    returned[0].tool_calls.clear()
+    assert conv.length() == 1
+    assert conv.messages()[0].tool_calls[0].id == "a"
+
+
+def test_replace_history_empty():
+    conv = Conversation()
+    conv.replace_history([Message("user", "hello")])
+    conv.replace_history(None)
+    assert conv.messages() == []
+    conv.replace_history([])
+    assert conv.length() == 0

@@ -38,6 +38,8 @@ providers:
 
 - `name`、`protocol`、`model`、`api_key` 为必填非空字符串。
 - `base_url` 可省略，使用对应服务的默认地址；填写时使用 API 根地址，勿填具体请求路径。
+- `context_window` 为可选的非负整数，单位 token；省略或为 0 时，Anthropic 使用
+  200000、OpenAI 使用 128000。使用兼容服务时请按模型实际窗口设置。
 - `thinking` 可省略，默认 `false`。仅 Anthropic 生效，按文档使用固定 2048 token
   思考预算与 4096 token 总输出限制；须选用支持手动 extended thinking 的模型。
   模型不支持此参数时显示请求错误，不自动切换思考模式。OpenAI 协议忽略此字段。
@@ -72,11 +74,18 @@ Windows 请使用 Windows Terminal 1.22 或更新版本；程序自动检测终�
 - 生成或执行工具时，Esc / Ctrl+C 取消本轮并留在会话中；空闲时 Ctrl+C 退出。
   `/exit` 在空闲时退出。
 - `/plan` 进入计划模式，只能读取和调查；`/do` 切回普通模式并立即按上文计划执行。
+- `/compact` 立即生成九节历史摘要，补回最近文件快照与可用工具，并保留近期对话原文；
+  完成后显示压缩前后的估算 token 数。摘要期间可用 Esc / Ctrl+C 取消。
+  未知斜杠命令显示可用命令列表。
 - 系统提示按七个固定模块拼装，预留自定义指令、Skill 和记忆空槽；环境信息单独采集。
   规划提醒通过临时消息按第 1、5、9…轮完整注入，其余轮精简，不写入会话历史。
 - 已完成内容保存在当前会话中；退出时将渲染后的记录写回普通终端供回看，
-  不创建会话文件，下次启动历史为空。
-- 请求失败后显示红色错误，可继续输入；不自动重试。工具执行结果保留在上下文中，
+  下次启动历史为空。超过 50000 字节的工具结果会写入
+  `.termcode/sessions/<会话 ID>/tool-results/`，历史中改用预览与重读路径；
+  文件在退出后保留，已加入 `.gitignore`。
+- 接近上下文窗口时自动摘要，并显示开始与完成提示；连续失败 3 次暂停自动摘要，
+  手动压缩仍可使用。上下文超长错误会先紧急压缩，再重试当前请求一次。
+- 其他请求失败后显示红色错误，可继续输入。工具执行结果保留在上下文中，
   续答请求失败也不会重新执行已经完成的操作。
 - 提供 `read_file`、`write_file`、`edit_file`、`bash`、`glob`、`grep` 六个工具。
   `edit_file` 只替换唯一匹配的原文；`bash` 使用当前平台 shell（Unix sh / Windows cmd），
@@ -123,6 +132,9 @@ uv run python tests/tmux_permission_e2e.py --live
 # ch07 MCP：双协议审批、重启、回退、环境展开和退出清理
 uv run python tests/tmux_mcp_e2e.py
 uv run python tests/tmux_mcp_e2e.py --live
+# 上下文管理：双协议确定性验收与已配置真实模型验收
+uv run python tests/tmux_context_e2e.py
+uv run python tests/tmux_context_e2e.py --live
 # 连发两条消息，打印 input/output/cache_write/cache_read
 uv run python examples/smoke.py --provider my-provider
 # 独立冷缓存诊断：只发送人工测试文本，不带项目提示、环境或工具

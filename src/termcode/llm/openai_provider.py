@@ -3,11 +3,11 @@
 import asyncio
 from collections.abc import AsyncGenerator
 
-from openai import AsyncOpenAI, omit
+from openai import AsyncOpenAI, BadRequestError, omit
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolUnionParam
 
 from termcode.config import ProviderConfig
-from termcode.llm import Request, StreamEvent, ToolCall, Usage
+from termcode.llm import PromptTooLongError, Request, StreamEvent, ToolCall, Usage
 
 
 class OpenAIProvider:
@@ -84,13 +84,16 @@ class OpenAIProvider:
                         "parameters": d.input_schema,
                     },
                 }
-                for d in req.tools
+                for d in req.tools or []
             ]
             stream = await self._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 stream=True,
                 stream_options={"include_usage": True},
+                max_completion_tokens=req.max_tokens
+                if req.max_tokens is not None
+                else omit,
                 tools=definitions if definitions else omit,
             )
             async with stream:
@@ -142,4 +145,15 @@ class OpenAIProvider:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if isinstance(exc, BadRequestError) and (
+                exc.code == "context_length_exceeded"
+                or (
+                    isinstance(exc.body, dict)
+                    and exc.body.get("code") == "context_length_exceeded"
+                )
+            ):
+                wrapped = PromptTooLongError("OpenAI 上下文超出窗口")
+                wrapped.__cause__ = exc
+                yield StreamEvent(err=wrapped)
+                return
             yield StreamEvent(err=exc)

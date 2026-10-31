@@ -11,8 +11,8 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from termcode import __version__
-from termcode.agent import Agent, ApprovalRequest
-from termcode.config import load
+from termcode.agent import Agent, ApprovalRequest, SessionRuntime
+from termcode.config import effective_context_window, load
 from termcode.conversation import Conversation
 from termcode.llm import Message, Provider, Request, System, Usage, new_provider
 from termcode.permission import Mode, Outcome, new_engine
@@ -94,7 +94,10 @@ async def run(args: argparse.Namespace) -> int:
     provider = new_provider(replace(cfg, thinking=False) if check else cfg)
     conv = Conversation()
     engine, _ = new_engine(str(Path.cwd()))
-    agent = Agent(provider, new_default_registry(), __version__, engine)
+    runtime = SessionRuntime(context_window=effective_context_window(cfg))
+    agent = Agent(
+        provider, new_default_registry(), __version__, engine, runtime=runtime
+    )
     mode = Mode.PLAN if args.plan else Mode.BYPASS
 
     def output(text: str) -> None:
@@ -129,6 +132,10 @@ async def run(args: argparse.Namespace) -> int:
                         output(f"tool {event.tool.name}: {event.tool.phase.value}")
                     if event.notice:
                         output(event.notice)
+                    if event.compact:
+                        from termcode.tui.commands import format_compact_notice
+
+                        output(format_compact_notice(event.compact))
                     if event.err:
                         raise RuntimeError("模型请求失败，请检查配置和服务状态")
             if reply:

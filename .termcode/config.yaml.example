@@ -6,6 +6,8 @@ providers:
     model: claude-sonnet-4-20250514
     api_key: "YOUR_ANTHROPIC_API_KEY"
     thinking: true
+    # context_window 单位 token，可选；未配置时按 protocol 默认（anthropic 200000、openai 128000）。
+    context_window: 200000
     # base_url: https://api.anthropic.com
 
   # - name: openai
@@ -13,6 +15,7 @@ providers:
   #   model: YOUR_OPENAI_MODEL
   #   api_key: "YOUR_OPENAI_API_KEY"
   #   thinking: false
+  #   context_window: 128000
   #   base_url: https://api.openai.com/v1
 
   # DeepSeek 等兼容服务使用 openai 协议；模型和地址以服务商说明为准。
@@ -21,4 +24,5 @@ providers:
   #   model: deepseek-chat
   #   base_url: https://api.deepseek.com
   #   api_key: "YOUR_DEEPSEEK_API_KEY"
+  #   context_window: 128000
 

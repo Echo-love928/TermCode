@@ -7,6 +7,11 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from .protocol_defaults import (
+    DEFAULT_ANTHROPIC_CONTEXT_WINDOW,
+    DEFAULT_OPENAI_CONTEXT_WINDOW,
+)
+
 
 class ConfigError(Exception):
     """可直接向用户展示的配置错误，不包含配置原文。"""
@@ -20,6 +25,15 @@ class ProviderConfig:
     model: str
     base_url: str | None = None
     thinking: bool = False
+    context_window: int = 0
+
+
+def effective_context_window(p: ProviderConfig) -> int:
+    if p.context_window > 0:
+        return p.context_window
+    if p.protocol == "openai":
+        return DEFAULT_OPENAI_CONTEXT_WINDOW
+    return DEFAULT_ANTHROPIC_CONTEXT_WINDOW
 
 
 @dataclass
@@ -52,7 +66,15 @@ def _from_dict(data: object) -> Config:
         raise ConfigError("providers 必须是非空列表")
     providers: list[ProviderConfig] = []
     names: set[str] = set()
-    allowed = {"name", "protocol", "model", "api_key", "base_url", "thinking"}
+    allowed = {
+        "name",
+        "protocol",
+        "model",
+        "api_key",
+        "base_url",
+        "thinking",
+        "context_window",
+    }
     for index, entry in enumerate(entries):
         prefix = f"providers[{index}]"
         if not isinstance(entry, dict):
@@ -73,6 +95,9 @@ def _from_dict(data: object) -> Config:
         thinking = entry.get("thinking", False)
         if not isinstance(thinking, bool):
             raise ConfigError(f"{prefix}.thinking 必须是布尔值 true 或 false")
+        context_window = entry.get("context_window", 0)
+        if type(context_window) is not int or context_window < 0:
+            raise ConfigError(f"{prefix}.context_window 必须是非负整数")
         base_url = entry.get("base_url")
         if base_url is not None:
             if not isinstance(base_url, str) or not base_url.strip():
@@ -97,6 +122,7 @@ def _from_dict(data: object) -> Config:
                 model=values["model"],
                 base_url=base_url,
                 thinking=thinking,
+                context_window=context_window,
             )
         )
     return Config(providers)

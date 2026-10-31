@@ -58,6 +58,13 @@ class SSEServer:
                         ).encode()
                     )
                     return
+                if owner.responses and "status" in owner.responses[0]:
+                    response = owner.responses.pop(0)
+                    self.send_response(response["status"])
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps(response["body"]).encode("utf-8"))
+                    return
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
@@ -82,6 +89,7 @@ class SSEServer:
 
             def scripted(self, response: dict) -> None:
                 """提供含碎片参数、多工具和续答的可控协议响应。"""
+                time.sleep(response.get("delay", 0))
                 calls = response.get("calls", [])
                 text = response.get("text", "")
                 if not self.path.endswith("/messages"):
@@ -158,7 +166,7 @@ class SSEServer:
                                 "model": "test-model",
                                 "choices": [],
                                 "usage": {
-                                    "prompt_tokens": 12,
+                                    "prompt_tokens": response.get("input_tokens", 12),
                                     "completion_tokens": 10,
                                     "total_tokens": 22,
                                     **response.get("cache_fields", {}),
@@ -183,7 +191,7 @@ class SSEServer:
                         "stop_reason": None,
                         "stop_sequence": None,
                         "usage": {
-                            "input_tokens": 1,
+                            "input_tokens": response.get("input_tokens", 1),
                             "output_tokens": 0,
                             **response.get("cache_fields", {}),
                         },

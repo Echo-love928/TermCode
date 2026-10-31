@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator
 
-from anthropic import AsyncAnthropic, omit
+from anthropic import AsyncAnthropic, BadRequestError, omit
 from anthropic.types import (
     ContentBlockParam,
     MessageParam,
@@ -14,7 +14,7 @@ from anthropic.types import (
 )
 
 from termcode.config import ProviderConfig
-from termcode.llm import Request, StreamEvent, ToolCall, Usage
+from termcode.llm import PromptTooLongError, Request, StreamEvent, ToolCall, Usage
 
 
 class AnthropicProvider:
@@ -112,17 +112,19 @@ class AnthropicProvider:
                     "description": d.description,
                     "input_schema": d.input_schema,
                 }
-                for d in req.tools
+                for d in req.tools or []
             ]
             has_tool_history = any(m.tool_calls or m.tool_results for m in req.messages)
             # 首轮思考增量沿用 ch02 丢弃策略，含工具历史时不再启用 thinking。
             async with self._client.messages.stream(
                 model=self.model,
-                max_tokens=4096,
+                max_tokens=req.max_tokens if req.max_tokens is not None else 4096,
                 system=system if system else omit,
                 messages=messages,
                 thinking=thinking
-                if self._cfg.thinking and not has_tool_history
+                if self._cfg.thinking
+                and not has_tool_history
+                and req.max_tokens is None
                 else omit,
                 tools=definitions if definitions else omit,
             ) as stream:
@@ -168,4 +170,16 @@ class AnthropicProvider:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if isinstance(exc, BadRequestError) and any(
+                marker in str(exc).lower()
+                for marker in (
+                    "prompt is too long",
+                    "context_length",
+                    "prompt_too_long",
+                )
+            ):
+                wrapped = PromptTooLongError("Anthropic 上下文超出窗口")
+                wrapped.__cause__ = exc
+                yield StreamEvent(err=wrapped)
+                return
             yield StreamEvent(err=exc)
