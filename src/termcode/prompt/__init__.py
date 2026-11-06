@@ -40,8 +40,8 @@ def assemble_system(mods: list[Module]) -> str:
     )
 
 
-def build_system_prompt() -> str:
-    return assemble_system(fixed_modules() + optional_modules())
+def build_system_prompt(instructions: str = "", memory: str = "") -> str:
+    return assemble_system(fixed_modules() + optional_modules(instructions, memory))
 
 
 BANNER_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "startup-banner.png"

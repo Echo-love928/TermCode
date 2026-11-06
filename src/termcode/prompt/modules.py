@@ -59,10 +59,10 @@ def fixed_modules() -> list[Module]:
     ]
 
 
-def optional_modules() -> list[Module]:
-    """仅预留挂载位置，本章不读取外部内容。"""
+def optional_modules(instructions: str = "", memory: str = "") -> list[Module]:
+    """将已加载的指令和索引挂载到稳定提示中。"""
     return [
-        Module("自定义指令", 80, ""),
+        Module("custom-instructions", 80, instructions),
         Module("已激活 Skill", 90, ""),
-        Module("长期记忆", 100, ""),
+        Module("long-term-memory", 100, memory),
     ]

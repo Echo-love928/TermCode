@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from termcode.llm import (
     ToolResult,
 )
 from termcode.llm import Usage as LLMUsage
+from termcode.memory import Manager
 from termcode.permission import Decision, Engine, Mode, Outcome, new_engine
 from termcode.tool import Registry
 
@@ -37,6 +39,13 @@ NOTICE_UNKNOWN_TOOLS = "（连续多轮只请求到未注册的工具，自动�
 NOTICE_STREAM_ERR = "（请求出错，本轮已中断。）"
 NOTICE_CANCELLED = "（已取消。）"
 EMPTY_REPLY = "（模型未返回正文）"
+MEMORY_SIGNAL = re.compile(
+    r"记住|记忆|别忘|remember|memo|更正|纠正|修正|"
+    r"我(?:一名|(?:现在|目前|其实|已经)?(?:是(?!谁|什么|否)|叫|在读|毕业|从事))|"
+    r"我的(?:身份|职业|工作|名字|姓名)|"
+    r"\b(?:i\s+am|i['’]m|my\s+(?:name|role|job|profession)\s+is)\b",
+    re.IGNORECASE,
+)
 
 
 class Phase(Enum):
@@ -122,12 +131,18 @@ class Agent:
         engine: Engine | None = None,
         *,
         runtime: SessionRuntime | None = None,
+        memory_manager: Manager | None = None,
+        instruction_text: str = "",
+        memory_text: str = "",
     ) -> None:
         self._provider = provider
         self._registry = registry
         self._version = version
         self.engine = engine if engine is not None else new_engine(str(Path.cwd()))[0]
         self.runtime = runtime if runtime is not None else SessionRuntime()
+        self._mem_mgr = memory_manager
+        self._instruction_text = instruction_text
+        self._memory_text = memory_text
         # 同一会话的普通对话和手动压缩必须串行。
         self._run_lock = self.runtime.run_lock
 
@@ -270,7 +285,11 @@ class Agent:
                 ),
                 cancel,
             )
-            system = System(prompt.build_system_prompt(), environment.render())
+            memory = self._mem_mgr.load_index() if self._mem_mgr else self._memory_text
+            system = System(
+                prompt.build_system_prompt(self._instruction_text, memory),
+                environment.render(),
+            )
             for iteration in range(1, MAX_ITERATIONS + 1):
                 if cancel.is_set():
                     raise _TurnCancelled
@@ -321,6 +340,19 @@ class Agent:
                         text = EMPTY_REPLY
                         push(Event(text=text))
                     conv.add_assistant(text)
+                    self.runtime.turn_count += 1
+                    recent = conv.messages()
+                    starts = [i for i, msg in enumerate(recent) if msg.role == "user"]
+                    periodic = self.runtime.turn_count % 5 == 0
+                    latest = recent[starts[-1]].content if starts else ""
+                    if self._mem_mgr and (periodic or MEMORY_SIGNAL.search(latest)):
+                        # 定时覆盖整段窗口；身份陈述或纠正无需等待第五轮。
+                        start = (
+                            starts[-min(5, len(starts))]
+                            if periodic and starts
+                            else (starts[-1] if starts else 0)
+                        )
+                        self._mem_mgr.schedule(recent[start:])
                     if usage is not None:
                         self.runtime.usage_anchor = usage_anchor(usage)
                         self.runtime.anchor_msg_len = conv.length()

@@ -87,6 +87,15 @@ BUILTIN_COMMANDS: dict[str, CommandHandler] = {
 }
 
 
+async def handle_resume(app: TermCodeApp) -> None:
+    from termcode.tui.resume import begin_resume
+
+    await begin_resume(app)
+
+
+BUILTIN_COMMANDS["/resume"] = handle_resume
+
+
 def dispatch_command(input_: str) -> tuple[CommandHandler | None, bool]:
     text = input_.strip()
     if not text.startswith("/"):

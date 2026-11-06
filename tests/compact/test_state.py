@@ -16,7 +16,7 @@ from termcode.compact import (
 def test_new_session_context(tmp_path):
     first = new_session_context(str(tmp_path))
     second = new_session_context(str(tmp_path))
-    assert re.fullmatch(r"\d+-[0-9a-f]{8}", first.session_id)
+    assert re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{4}", first.session_id)
     assert first.session_id != second.session_id
     assert Path(first.spill_dir).is_dir()
 
@@ -27,7 +27,7 @@ def test_new_session_context_rand_fail_fallback(tmp_path, monkeypatch):
 
     monkeypatch.setattr("termcode.compact.state.secrets.token_hex", fail)
     assert re.fullmatch(
-        r"\d+-[0-9a-f]{8}", new_session_context(str(tmp_path)).session_id
+        r"\d{8}-\d{6}-[0-9a-f]{4}", new_session_context(str(tmp_path)).session_id
     )
 
 

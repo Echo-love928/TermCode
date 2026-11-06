@@ -37,19 +37,37 @@ async def _run(config: ProviderConfig) -> None:
     from termcode.agent import SessionRuntime
     from termcode.compact import new_session_context
     from termcode.config import effective_context_window
+    from termcode.instructions import Loader
     from termcode.mcp import load_config, new_manager
+    from termcode.memory import Manager
     from termcode.permission import new_engine
+    from termcode.session import Writer, clean_expired
     from termcode.tool import new_default_registry
     from termcode.tui.app import TermCodeApp
     from termcode.tui.keys import configure_terminal_keys
 
     configure_terminal_keys()
     root = str(Path.cwd())
+    instruction_text = Loader(root).load()
+    mem_mgr = Manager(
+        str(Path(root) / ".termcode/memory"), str(Path.home() / ".termcode/memory")
+    )
+    memory_text = mem_mgr.load_index()
     runtime = SessionRuntime(
         session=new_session_context(root),
         context_window=effective_context_window(config.providers[0]),
     )
     registry = new_default_registry()
+    try:
+        writer = Writer(runtime.session.session_dir)
+    except OSError:
+        import logging
+
+        logging.getLogger(__name__).exception("无法创建会话存档，对话继续运行")
+        writer = None
+    cleanup_task = asyncio.create_task(
+        clean_expired(str(Path(root) / ".termcode/sessions"))
+    )
     manager = await new_manager(load_config(root), __version__)
     try:
         for tool in manager.tools():
@@ -59,7 +77,14 @@ async def _run(config: ProviderConfig) -> None:
         if err is not None:
             print("权限引擎降级：无法解析项目根目录", file=sys.stderr)
         app = TermCodeApp(
-            config.providers, registry=registry, engine=engine, runtime=runtime
+            config.providers,
+            registry=registry,
+            engine=engine,
+            runtime=runtime,
+            writer=writer,
+            mem_mgr=mem_mgr,
+            instruction_text=instruction_text,
+            memory_text=memory_text,
         )
         try:
             await app.run_async(inline=True)
@@ -71,4 +96,8 @@ async def _run(config: ProviderConfig) -> None:
         finally:
             app.print_transcript()
     finally:
+        await mem_mgr.close()
+        if writer:
+            writer.close()
+        await cleanup_task
         await manager.close()

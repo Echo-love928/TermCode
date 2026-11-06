@@ -24,6 +24,7 @@ class SessionRuntime:
         default_factory=lambda: new_session_context(str(Path.cwd()))
     )
     context_window: int = 200000
+    turn_count: int = 0
     # 仅在会话锁内由主对话更新，摘要完成后清零。
     usage_anchor: int = 0
     anchor_msg_len: int = 0

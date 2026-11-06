@@ -26,3 +26,9 @@ providers:
   #   api_key: "YOUR_DEEPSEEK_API_KEY"
   #   context_window: 128000
 
+# 项目指令按优先级加载：项目根 TERMCODE.md、.termcode/TERMCODE.md、
+# ~/.termcode/TERMCODE.md。指令支持 @include 相对路径，启动时加载一次。
+# .termcode/sessions/ 保存 JSONL 对话及工具结果；/resume 可搜索恢复历史会话。
+# 超过 30 天的新格式会话在启动后后台清理，旧格式目录保留。
+# .termcode/memory/ 保存项目笔记，~/.termcode/memory/ 保存用户偏好。
+# MEMORY.md 索引自动注入；每 5 轮或“记住/记忆/别忘/remember/memo”触发更新。

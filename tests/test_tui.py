@@ -106,7 +106,10 @@ async def test_timer_busy_guard_narrow_resize_and_ctrl_c(sse_server):
         await app.submit("等待回复")
         await wait_for(lambda: bool(sse_server.requests))
         assert app.state == SessionState.STREAMING
-        assert app.query_one("#input", ChatInput).read_only
+        assert not app.query_one("#input", ChatInput).read_only
+        await pilot.press(*list("/resume"), "enter")
+        assert "请等待当前任务完成" in transcript(app)
+        assert app.state == SessionState.STREAMING
         await app.submit("不应提交")
         assert len(sse_server.requests) == 1
         assert len(app.conv.messages()) == 1

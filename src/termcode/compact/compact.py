@@ -64,7 +64,8 @@ async def manage_context(in_: ManageInput) -> ManageOutput:
         messages = await asyncio.to_thread(
             offload_and_snip, in_.conv.messages(), in_.replacement, in_.session
         )
-        in_.conv.replace_history(messages)
+        if messages != in_.conv.messages():
+            in_.conv.replace_history(messages)
         est = estimate_tokens(in_.usage_anchor, messages, in_.anchor_msg_len)
     if in_.trigger == TriggerKind.AUTO:
         threshold = in_.context_window - SUMMARY_RESERVE - AUTO_SAFETY_MARGIN

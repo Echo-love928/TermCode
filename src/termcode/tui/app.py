@@ -6,6 +6,7 @@ import time
 from contextlib import suppress
 from dataclasses import replace
 from enum import Enum
+from pathlib import Path
 
 from rich.console import Console, RenderableType
 from rich.text import Text
@@ -22,8 +23,10 @@ from termcode.agent import Agent, ApprovalRequest, SessionRuntime, ToolEvent
 from termcode.config import ProviderConfig, effective_context_window
 from termcode.conversation import Conversation
 from termcode.llm import Provider, new_provider
+from termcode.memory import Manager
 from termcode.permission import Engine, Mode, Outcome, new_engine
 from termcode.prompt import StartupBanner
+from termcode.session import Writer
 from termcode.tool import Registry, new_default_registry
 from termcode.tui.banner import (
     BannerArtwork,
@@ -51,6 +54,7 @@ class SessionState(Enum):
     IDLE = "idle"
     STREAMING = "streaming"
     APPROVING = "approving"
+    RESUMING = "resuming"
 
 
 def next_mode(mode: Mode) -> Mode:
@@ -119,6 +123,10 @@ class TermCodeApp(App[None]):
         engine: Engine | None = None,
         *,
         runtime: SessionRuntime | None = None,
+        writer: Writer | None = None,
+        mem_mgr: Manager | None = None,
+        instruction_text: str = "",
+        memory_text: str = "",
     ) -> None:
         super().__init__()
         if not providers:
@@ -129,7 +137,15 @@ class TermCodeApp(App[None]):
         self.runtime = runtime if runtime is not None else SessionRuntime()
         self._manual_compact = False
         self.state = SessionState.SELECTING
-        self.conv = Conversation()
+        self.writer = writer
+        self.mem_mgr = mem_mgr
+        self.instruction_text = instruction_text
+        self.memory_text = memory_text
+        self.workspace = os.getcwd()
+        self.sessions_dir = str(Path(self.workspace) / ".termcode/sessions")
+        self.conv = Conversation(
+            writer.on_append if writer else None, writer.on_replace if writer else None
+        )
         self._tool_registry = (
             registry if registry is not None else new_default_registry()
         )
@@ -214,6 +230,10 @@ class TermCodeApp(App[None]):
 
     def _activate_provider(self, index: int) -> None:
         self.provider = new_provider(self.providers[index])
+        if self.writer:
+            self.writer.model = self.provider.model
+        if self.mem_mgr:
+            self.mem_mgr.set_provider(self.provider, self.provider.model)
         self.runtime.context_window = effective_context_window(self.providers[index])
         self.agent = None
         self._ensure_agent()
@@ -233,6 +253,9 @@ class TermCodeApp(App[None]):
                 __version__,
                 self.engine,
                 runtime=self.runtime,
+                memory_manager=self.mem_mgr,
+                instruction_text=self.instruction_text,
+                memory_text=self.memory_text,
             )
         return self.agent
 
@@ -257,6 +280,11 @@ class TermCodeApp(App[None]):
         await self.submit(event.text)
 
     async def submit(self, text: str) -> None:
+        if text.strip() == "/resume" and self.state != SessionState.IDLE:
+            if self.state != SessionState.RESUMING:
+                self.query_one("#input", ChatInput).clear()
+            self._write(Text("请等待当前任务完成", style="dim"))
+            return
         if self.state != SessionState.IDLE or self._quitting or not text.strip():
             return
         editor = self.query_one("#input", ChatInput)
@@ -274,7 +302,8 @@ class TermCodeApp(App[None]):
         self._refresh_statusbar()
         self.turn_cancel = asyncio.Event()
         self.iter = 0
-        editor.read_only = True
+        # 运行中允许编辑草稿和提交 /resume 提示，submit 仍阻止并发对话。
+        editor.read_only = False
         self.cur_reply = ""
         self.turn_start = time.monotonic()
         self.state = SessionState.STREAMING
@@ -362,12 +391,22 @@ class TermCodeApp(App[None]):
         viewport.scroll_page_down(animate=False)
 
     async def _close_provider(self) -> None:
+        if self.mem_mgr:
+            await self.mem_mgr.close()
+        if self.writer:
+            self.writer.close()
         if self.provider is not None and not self._provider_closed:
             self._provider_closed = True
             with suppress(Exception):
                 await asyncio.wait_for(self.provider.aclose(), timeout=2)
 
     def action_cancel_turn(self) -> None:
+        if self.state == SessionState.RESUMING:
+            from termcode.tui.resume import ResumeScreen
+
+            if isinstance(self.screen, ResumeScreen):
+                self.screen.dismiss(None)
+            return
         if (
             self.state in (SessionState.STREAMING, SessionState.APPROVING)
             and self.turn_cancel is not None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import secrets
 import threading
 import time
@@ -107,15 +108,31 @@ class RecoveryState:
 class SessionContext:
     session_id: str
     spill_dir: str
+    session_dir: str = ""
 
 
 def _new_session_id() -> str:
     try:
-        suffix = secrets.token_hex(4)
+        suffix = secrets.token_hex(2)
     except Exception:
         logging.getLogger(__name__).warning("会话随机数生成失败，使用本地随机数")
-        suffix = random.Random(time.time_ns()).randbytes(4).hex()
-    return f"{int(time.time())}-{suffix}"
+        suffix = random.Random(time.time_ns()).randbytes(2).hex()
+    return f"{datetime.now():%Y%m%d-%H%M%S}-{suffix}"
+
+
+def parse_session_time(session_id: str) -> datetime:
+    if not re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{4}", session_id):
+        raise ValueError("无效会话 ID")
+    return datetime.strptime(session_id[:15], "%Y%m%d-%H%M%S")
+
+
+def open_session_context(workspace: str, session_id: str) -> SessionContext:
+    parse_session_time(session_id)
+    root = Path(workspace).resolve() / ".termcode/sessions"
+    directory = (root / session_id).resolve()
+    if not directory.is_relative_to(root.resolve()) or not directory.is_dir():
+        raise ValueError("会话目录不存在或越界")
+    return SessionContext(session_id, str(directory / "tool-results"), str(directory))
 
 
 def new_session_context(workspace: str) -> SessionContext:
@@ -128,4 +145,4 @@ def new_session_context(workspace: str) -> SessionContext:
     except OSError:
         # 不可写工作区仍允许对话，首次落盘时按原文降级。
         logging.getLogger(__name__).warning("无法创建工具结果目录")
-    return SessionContext(session_id, str(spill_dir))
+    return SessionContext(session_id, str(spill_dir), str(spill_dir.parent))
