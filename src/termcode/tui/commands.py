@@ -38,6 +38,12 @@ async def handle_plan(app: TermCodeApp) -> None:
     app._refresh_statusbar()
 
 
+async def handle_memory(app: TermCodeApp) -> None:
+    from termcode.tui.memory import show_memory
+
+    await show_memory(app)
+
+
 async def handle_do(app: TermCodeApp) -> None:
     app.mode = Mode.DEFAULT
     app.conv.add_user(EXECUTE_DIRECTIVE)
@@ -84,6 +90,7 @@ BUILTIN_COMMANDS: dict[str, CommandHandler] = {
     "/plan": handle_plan,
     "/do": handle_do,
     "/compact": handle_compact,
+    "/memory": handle_memory,
 }
 
 

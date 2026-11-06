@@ -98,3 +98,22 @@ def test_overflow_and_invalid_batch_roll_back(tmp_path):
     with pytest.raises(ValueError):
         store.apply([create(f"note_{i}") for i in range(201)])
     assert not list(tmp_path.glob("*.md"))
+
+
+def test_list_notes_reads_full_body_and_skips_invalid_notes(tmp_path):
+    store = Store(str(tmp_path))
+    content = "完整正文" * 100
+    store.apply([create() | {"content": content}])
+    index = (tmp_path / "MEMORY.md").read_bytes()
+    (tmp_path / "project_knowledge_broken.md").write_text(
+        "无 frontmatter", encoding="utf-8"
+    )
+    (tmp_path / "user_preference_invalid.md").write_text(
+        "---\ntitle: [错误标题]\ntype: user_preference\n---\n内容", encoding="utf-8"
+    )
+    (tmp_path / "unrelated.md").write_text("不应读取的文件", encoding="utf-8")
+    notes = store.list_notes()
+    assert len(notes) == 1
+    assert notes[0][0] == "project_knowledge_language.md"
+    assert notes[0][1].content == content
+    assert (tmp_path / "MEMORY.md").read_bytes() == index

@@ -10,6 +10,8 @@ dist/
 *.egg-info/
 .termcode/config.yaml
 .termcode/sessions/
+# 长期记忆含用户画像，仅在本机保存
+.termcode/memory/
 .termcode/settings.local.yaml
 
 # 本机配置、凭据和编辑器工作区

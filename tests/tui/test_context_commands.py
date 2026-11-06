@@ -179,7 +179,8 @@ async def test_multi_provider_selection_sets_window_and_persists_runtime(sse_ser
 
 
 def test_dispatch_registry():
-    assert len(BUILTIN_COMMANDS) == 5
+    assert len(BUILTIN_COMMANDS) == 6
+    assert dispatch_command("/memory") == (BUILTIN_COMMANDS["/memory"], True)
     assert dispatch_command("普通输入") == (None, False)
     assert dispatch_command("/unknown")[1]
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from .types import NoteType, UpdateAction
+from .types import Note, NoteType, UpdateAction
 
 
 class Store:
@@ -27,6 +27,37 @@ class Store:
                 return (self.directory / "MEMORY.md").read_text(encoding="utf-8")
             except (OSError, UnicodeError):
                 return ""
+
+    def list_notes(self) -> list[tuple[str, Note]]:
+        """读取已保存的完整笔记快照，不创建目录或改写索引。"""
+        with self._lock:
+            notes = []
+            for path in sorted(self.directory.glob("*.md")):
+                if path.name == "MEMORY.md":
+                    continue
+                try:
+                    meta, content = self._read(self._path(path.name))
+                    if not isinstance(meta["title"], str):
+                        continue
+                    note = Note(
+                        type=NoteType(meta["type"]),
+                        title=meta["title"],
+                        content=content,
+                        created=str(meta.get("created", "")),
+                        updated=str(meta.get("updated", "")),
+                    )
+                except (
+                    OSError,
+                    UnicodeError,
+                    ValueError,
+                    TypeError,
+                    KeyError,
+                    yaml.YAMLError,
+                ):
+                    # 单条笔记损坏或路径不合法，不影响查看其他记忆。
+                    continue
+                notes.append((path.name, note))
+            return notes
 
     def _path(self, filename: str) -> Path:
         if not re.fullmatch(
