@@ -16,17 +16,26 @@ from termcode.tui.compact import format_compact_notice
 from termcode.tui.view import render_markdown, tool_line, tool_result_summary
 
 if TYPE_CHECKING:
+    from termcode.skills.parser import SkillDef
     from termcode.tui.app import TermCodeApp
 
 
-async def consume_stream(app: TermCodeApp) -> None:
+async def consume_stream(
+    app: TermCodeApp, *, fork: tuple[SkillDef, str] | None = None
+) -> None:
     if app.provider is None:
         app._finish_with_error(RuntimeError("尚未选择供应商"))
         return
     try:
-        async with aclosing(
-            app._ensure_agent().run(app.conv, app.mode, app.turn_cancel)
-        ) as stream:
+        if fork is None:
+            events = app._ensure_agent().run(app.conv, app.mode, app.turn_cancel)
+        else:
+            assert app.skill_executor is not None
+            events = app.skill_executor.stream_fork(
+                *fork, app.conv, app.mode, app.turn_cancel
+            )
+        fork_output: list[str] = []
+        async with aclosing(events) as stream:
             async for event in stream:
                 if isinstance(event, ApprovalRequest):
                     from termcode.tui.app import SessionState
@@ -47,8 +56,7 @@ async def consume_stream(app: TermCodeApp) -> None:
                     )
                     continue
                 if event.err is not None:
-                    app._finish_with_error(event.err)
-                    return
+                    raise event.err
                 if event.tool is not None:
                     tool = event.tool
                     if tool.phase == Phase.START:
@@ -83,6 +91,8 @@ async def consume_stream(app: TermCodeApp) -> None:
                         except OSError:
                             logging.getLogger(__name__).warning("会话用量存档失败")
                 if event.notice:
+                    if fork is not None:
+                        fork_output.append(f"\n{event.notice}")
                     if app.cur_reply:
                         app._write(
                             render_markdown(
@@ -96,7 +106,11 @@ async def consume_stream(app: TermCodeApp) -> None:
                     app.iter = event.iter
                 if event.text:
                     app.cur_reply += event.text
+                    if fork is not None:
+                        fork_output.append(event.text)
                 if event.done:
+                    if fork is not None:
+                        app.conv.add_assistant("".join(fork_output).strip())
                     if app.cur_reply:
                         app._finish_with_assistant(app.cur_reply)
                     else:
@@ -113,6 +127,8 @@ async def consume_stream(app: TermCodeApp) -> None:
     except asyncio.CancelledError:
         raise
     except Exception as exc:
+        if fork is not None:
+            app.conv.add_assistant(f"[Skill {fork[0].name} 执行失败]")
         app._finish_with_error(exc)
 
 

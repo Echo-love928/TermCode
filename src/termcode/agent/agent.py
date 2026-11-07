@@ -13,7 +13,13 @@ from pathlib import Path
 from termcode import __version__, prompt
 from termcode.agent.event import CompactEvent, CompactPhase
 from termcode.agent.runtime import SessionRuntime
-from termcode.compact import ManageInput, ManageOutput, TriggerKind, manage_context
+from termcode.compact import (
+    ManageInput,
+    ManageOutput,
+    SessionContext,
+    TriggerKind,
+    manage_context,
+)
 from termcode.compact.const import MANUAL_SAFETY_MARGIN
 from termcode.compact.token import estimate_tokens, usage_anchor
 from termcode.conversation import Conversation
@@ -29,7 +35,9 @@ from termcode.llm import (
 from termcode.llm import Usage as LLMUsage
 from termcode.memory import Manager
 from termcode.permission import Decision, Engine, Mode, Outcome, new_engine
+from termcode.prompt.environment import build_environment_context
 from termcode.tool import Registry
+from termcode.tool.load_skill import LoadSkill
 
 MAX_ITERATIONS = 25
 MAX_UNKNOWN_RUN = 3
@@ -143,8 +151,41 @@ class Agent:
         self._mem_mgr = memory_manager
         self._instruction_text = instruction_text
         self._memory_text = memory_text
+        self.active_skills = self.runtime.active_skills
+        self._skill_catalog = ""
         # 同一会话的普通对话和手动压缩必须串行。
         self._run_lock = self.runtime.run_lock
+
+    def activate_skill(self, name: str, prompt_body: str) -> None:
+        self.active_skills[name] = prompt_body
+
+    def clear_active_skills(self) -> None:
+        self.active_skills.clear()
+
+    def set_skill_catalog(self, catalog: str) -> None:
+        self._skill_catalog = catalog
+
+    def fork(
+        self,
+        provider: Provider,
+        excluded_tools: frozenset[str],
+        session: SessionContext,
+    ) -> "Agent":
+        return Agent(
+            provider,
+            self._registry.without(excluded_tools),
+            self._version,
+            self.engine,
+            runtime=SessionRuntime(
+                session=session, context_window=self.runtime.context_window
+            ),
+            instruction_text=self._instruction_text,
+            memory_text=self._memory_text,
+        )
+
+    @property
+    def provider(self) -> Provider:
+        return self._provider
 
     def _manage_input(
         self,
@@ -286,13 +327,16 @@ class Agent:
                 cancel,
             )
             memory = self._mem_mgr.load_index() if self._mem_mgr else self._memory_text
-            system = System(
-                prompt.build_system_prompt(self._instruction_text, memory),
-                environment.render(),
-            )
+            stable = prompt.build_system_prompt(self._instruction_text, memory)
             for iteration in range(1, MAX_ITERATIONS + 1):
                 if cancel.is_set():
                     raise _TurnCancelled
+                system = System(
+                    stable,
+                    build_environment_context(
+                        environment, self.active_skills, self._skill_catalog
+                    ),
+                )
                 definitions = (
                     self._registry.read_only_definitions()
                     if mode == Mode.PLAN
@@ -369,7 +413,9 @@ class Agent:
                 )
                 results = [ToolResult(c.id, NOTICE_CANCELLED, True) for c in calls]
                 try:
-                    await self._execute_batched(calls, results, mode, cancel, push)
+                    await self._execute_batched(
+                        calls, results, mode, cancel, push, conv
+                    )
                 finally:
                     # 包括未开始和执行中的调用，任何退出路径均有对应结果。
                     conv.add_tool_results(results)
@@ -439,6 +485,7 @@ class Agent:
         mode: Mode,
         cancel: asyncio.Event,
         push: Push,
+        conv: Conversation,
     ) -> None:
         def check_one(index: int) -> tuple[Decision, str]:
             call = calls[index]
@@ -465,7 +512,13 @@ class Agent:
                         await asyncio.to_thread(self.engine.persist_local_allow, call)
                     except Exception:
                         logging.getLogger(__name__).warning("永久放行规则保存失败")
-            result = await self._registry.execute(call.name, call.input)
+            tool = self._registry.get(call.name)
+            if isinstance(tool, LoadSkill):
+                result = await tool.execute_for_turn(
+                    call.input, conv, mode, cancel, push
+                )
+            else:
+                result = await self._registry.execute(call.name, call.input)
             results[index] = ToolResult(call.id, result.content, result.is_error)
             if call.name == "read_file" and not result.is_error:
                 try:
@@ -483,8 +536,10 @@ class Agent:
             if cancel.is_set():
                 raise _TurnCancelled
             j = i + 1
-            if self._registry.is_read_only(calls[i].name):
-                while j < len(calls) and self._registry.is_read_only(calls[j].name):
+            if self._registry.is_concurrency_safe(calls[i].name):
+                while j < len(calls) and self._registry.is_concurrency_safe(
+                    calls[j].name
+                ):
                     j += 1
             allowed: list[tuple[int, Decision, str]] = []
             for k in range(i, j):

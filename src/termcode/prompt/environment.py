@@ -30,6 +30,22 @@ class Environment:
         )
 
 
+def build_environment_context(
+    environment: Environment, active_skills: dict[str, str], skill_catalog: str
+) -> str:
+    sections = [environment.render()]
+    if skill_catalog:
+        sections.append(skill_catalog)
+    if active_skills:
+        sections.append(
+            "## Active Skills\n\n"
+            + "\n\n".join(
+                f"### Skill: {name}\n\n{body}" for name, body in active_skills.items()
+            )
+        )
+    return "\n\n".join(sections)
+
+
 def gather_environment(version: str, model: str) -> Environment:
     """只读取允许的环境项；git 不可用、失败或超时均降级。"""
     try:

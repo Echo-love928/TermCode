@@ -19,6 +19,7 @@ FRIENDLY_NAMES = {
     "grep": "Grep",
 }
 FILE_TOOLS = frozenset(FRIENDLY_NAMES) - {"bash"}
+SKILL_TARGETS = {"LoadSkill": "name", "InstallSkill": "url"}
 
 
 class SettingsError(Exception):
@@ -85,7 +86,7 @@ def friendly_name(internal: str) -> str:
 def categorize(internal: str, read_only: bool | None = False) -> Category:
     if read_only is True:
         return Category.READ
-    if internal in {"write_file", "edit_file"}:
+    if internal in {"write_file", "edit_file", "InstallSkill"}:
         return Category.WRITE
     return Category.EXEC
 
@@ -102,6 +103,8 @@ def extract_target(call: ToolCall) -> tuple[str, bool, bool]:
                 target = "."
         elif call.name == "bash":
             target = data.get("command", "")
+        elif call.name in SKILL_TARGETS:
+            target = data.get(SKILL_TARGETS[call.name], "")
         else:
             return "", False, False
         ok = isinstance(target, str) and bool(target.strip()) and "\x00" not in target

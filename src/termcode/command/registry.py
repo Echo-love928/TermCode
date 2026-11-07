@@ -7,6 +7,7 @@ class Registry:
     def __init__(self) -> None:
         self._by_name: dict[str, Command] = {}
         self._visible: list[Command] = []
+        self._skill_commands: dict[str, Command] = {}
 
     def register(self, cmd: Command) -> None:
         keys = (cmd.name, *cmd.aliases)
@@ -28,12 +29,23 @@ class Registry:
             self._visible.append(cmd)
             self._visible.sort(key=lambda command: command.name)
 
-    def lookup(self, name: str) -> Command | None:
-        return self._by_name.get(name.lower())
+    def set_skill_commands(self, commands: list[Command]) -> None:
+        # Skill 覆盖只作用于当前注册表，重载移除后原命令自动恢复。
+        self._skill_commands = {cmd.name: cmd for cmd in commands}
+
+    def lookup(self, name: str, *, base_only: bool = False) -> Command | None:
+        key = name.lower()
+        if not base_only and key in self._skill_commands:
+            return self._skill_commands[key]
+        return self._by_name.get(key)
 
     def visible(self) -> list[Command]:
-        return list(self._visible)
+        if not self._skill_commands:
+            return list(self._visible)
+        visible = {cmd.name: cmd for cmd in self._visible}
+        visible.update(self._skill_commands)
+        return sorted(visible.values(), key=lambda cmd: cmd.name)
 
     def prefix_match(self, prefix: str) -> list[Command]:
         value = prefix.strip().removeprefix("/").lower()
-        return [cmd for cmd in self._visible if cmd.name.startswith(value)]
+        return [cmd for cmd in self.visible() if cmd.name.startswith(value)]

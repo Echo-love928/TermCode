@@ -63,6 +63,5 @@ def optional_modules(instructions: str = "", memory: str = "") -> list[Module]:
     """将已加载的指令和索引挂载到稳定提示中。"""
     return [
         Module("custom-instructions", 80, instructions),
-        Module("已激活 Skill", 90, ""),
         Module("long-term-memory", 100, memory),
     ]

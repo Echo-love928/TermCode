@@ -18,7 +18,7 @@ class CompletionMenu:
     rows: int = MAX_ROWS
 
     def update(self, input_text: str, reg: Registry) -> None:
-        if not input_text.startswith("/") or any(c in input_text for c in "\n\r"):
+        if not input_text.startswith("/") or any(c.isspace() for c in input_text):
             self.hide()
             return
         previous = self.selected()

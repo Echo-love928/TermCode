@@ -23,6 +23,7 @@ from termcode import __version__
 from termcode.agent import Agent, ApprovalRequest, SessionRuntime, ToolEvent
 from termcode.command import Registry as CommandRegistry
 from termcode.command import register_builtins
+from termcode.command.skills import register_skill_commands, register_skill_manager
 from termcode.config import ProviderConfig, effective_context_window
 from termcode.conversation import Conversation
 from termcode.llm import Provider, new_provider
@@ -30,7 +31,12 @@ from termcode.memory import Manager
 from termcode.permission import Engine, Mode, Outcome, new_engine
 from termcode.prompt import StartupBanner
 from termcode.session import Writer
+from termcode.skills.executor import SkillExecutor
+from termcode.skills.loader import SkillLoader
+from termcode.skills.parser import SkillDef
 from termcode.tool import Registry, new_default_registry
+from termcode.tool.install_skill import InstallSkillTool
+from termcode.tool.load_skill import LoadSkill
 from termcode.tui.banner import (
     BannerArtwork,
     TranscriptLog,
@@ -138,12 +144,14 @@ class TermCodeApp(App[None]):
         instruction_text: str = "",
         memory_text: str = "",
         cancel_background: Callable[[], None] | None = None,
+        skill_loader: SkillLoader | None = None,
     ) -> None:
         super().__init__()
         if not providers:
             raise ValueError("至少需要一项供应商配置")
         self.providers = providers
         self.provider: Provider | None = None
+        self._provider_config: ProviderConfig | None = None
         self.agent: Agent | None = None
         self.runtime = runtime if runtime is not None else SessionRuntime()
         self.cmd_registry = CommandRegistry()
@@ -167,6 +175,20 @@ class TermCodeApp(App[None]):
         self._tool_registry = (
             registry if registry is not None else new_default_registry()
         )
+        self.skill_loader = skill_loader
+        self.skill_executor: SkillExecutor | None = None
+        self._load_skill_tool: LoadSkill | None = None
+        if skill_loader is not None:
+            self._load_skill_tool = LoadSkill()
+            self._load_skill_tool.set_loader(skill_loader)
+            self._tool_registry.register(self._load_skill_tool)
+            self._tool_registry.register(
+                InstallSkillTool(skill_loader, self._refresh_skills)
+            )
+            register_skill_manager(
+                self.cmd_registry, skill_loader, self._refresh_skills
+            )
+            self._refresh_skills()
         self.cur_tools: list[ToolEvent] = []
         self.engine = engine if engine is not None else new_engine(os.getcwd())[0]
         self.mode = self.engine.start_mode()
@@ -253,7 +275,8 @@ class TermCodeApp(App[None]):
             self.query_one("#providers", OptionList).focus()
 
     def _activate_provider(self, index: int) -> None:
-        self.provider = new_provider(self.providers[index])
+        self._provider_config = self.providers[index]
+        self.provider = new_provider(self._provider_config)
         if self.writer:
             self.writer.model = self.provider.model
         if self.mem_mgr:
@@ -271,17 +294,44 @@ class TermCodeApp(App[None]):
         if self.agent is None:
             if self.provider is None:
                 raise RuntimeError("尚未选择供应商")
-            self.agent = Agent(
-                self.provider,
-                self._tool_registry,
-                __version__,
-                self.engine,
-                runtime=self.runtime,
-                memory_manager=self.mem_mgr,
-                instruction_text=self.instruction_text,
-                memory_text=self.memory_text,
-            )
+            self._bind_agent(self._create_agent(self.provider, self.runtime))
+        assert self.agent is not None
         return self.agent
+
+    def _create_agent(self, provider: Provider, runtime: SessionRuntime) -> Agent:
+        return Agent(
+            provider,
+            self._tool_registry,
+            __version__,
+            self.engine,
+            runtime=runtime,
+            memory_manager=self.mem_mgr,
+            instruction_text=self.instruction_text,
+            memory_text=self.memory_text,
+        )
+
+    def _bind_agent(self, agent: Agent) -> None:
+        self.agent = agent
+        if self._load_skill_tool is not None:
+            self.skill_executor = SkillExecutor(agent, self._provider_config)
+            self._load_skill_tool.set_agent(agent, self.skill_executor)
+            agent.set_skill_catalog(self._skill_catalog)
+
+    def _refresh_skills(self) -> None:
+        if self.skill_loader is None:
+            return
+        items = self.skill_loader.get_catalog()
+        self._skill_catalog = (
+            "## Available Skills\n\n"
+            + "\n".join(f"- {name}: {' '.join(desc.split())}" for name, desc in items)
+            + "\n\nIf the user's request matches a Skill, "
+            "call LoadSkill to activate it."
+            if items
+            else ""
+        )
+        register_skill_commands(self.cmd_registry, self.skill_loader)
+        if self.agent is not None:
+            self.agent.set_skill_catalog(self._skill_catalog)
 
     def _refresh_statusbar(self) -> None:
         if self.provider is not None:
@@ -387,7 +437,9 @@ class TermCodeApp(App[None]):
         self._render_completion()
         return True
 
-    def _begin_turn(self, text: str) -> None:
+    def _begin_turn(
+        self, text: str, *, fork: tuple[SkillDef, str] | None = None
+    ) -> None:
         editor = self.query_one("#input", ChatInput)
         self._write(user_block(self._clean(text)))
         self._refresh_statusbar()
@@ -401,7 +453,7 @@ class TermCodeApp(App[None]):
         self.query_one("#streaming-scroll").display = True
         self._refresh_streaming_view()
         self._timer = self.set_interval(0.1, lambda: tick(self))
-        self._stream_task = asyncio.create_task(consume_stream(self))
+        self._stream_task = asyncio.create_task(consume_stream(self, fork=fork))
 
     def _refresh_streaming_view(self) -> None:
         if self.state == SessionState.APPROVING and self.pending is not None:

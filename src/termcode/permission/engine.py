@@ -13,6 +13,7 @@ from termcode.permission.sandbox import (
 )
 from termcode.permission.settings import (
     FRIENDLY_NAMES,
+    SKILL_TARGETS,
     Settings,
     SettingsError,
     categorize,
@@ -75,7 +76,7 @@ class Engine:
         elif call.name in self.mcp_tools:
             # 仅 CLI 成功注册的 MCP 工具可复用规则和模式兜底。
             pass
-        elif call.name not in FRIENDLY_NAMES:
+        elif call.name not in FRIENDLY_NAMES and call.name not in SKILL_TARGETS:
             return Decision.DENY, "未知工具，安全拒绝：" + call.name
         elif not ok:
             return Decision.DENY, "无法解析命令参数，安全拒绝"

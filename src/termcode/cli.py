@@ -42,6 +42,7 @@ async def _run(config: ProviderConfig) -> None:
     from termcode.memory import Manager
     from termcode.permission import new_engine
     from termcode.session import Writer, clean_expired
+    from termcode.skills.loader import SkillLoader
     from termcode.tool import new_default_registry
     from termcode.tui.app import TermCodeApp
     from termcode.tui.keys import configure_terminal_keys
@@ -58,6 +59,8 @@ async def _run(config: ProviderConfig) -> None:
         context_window=effective_context_window(config.providers[0]),
     )
     registry = new_default_registry()
+    skill_loader = SkillLoader(root)
+    skill_loader.load_all()
     try:
         writer = Writer(runtime.session.session_dir)
     except OSError:
@@ -86,6 +89,7 @@ async def _run(config: ProviderConfig) -> None:
             instruction_text=instruction_text,
             memory_text=memory_text,
             cancel_background=manager.cancel_pending,
+            skill_loader=skill_loader,
         )
         try:
             await app.run_async(inline=True)

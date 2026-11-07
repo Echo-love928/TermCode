@@ -3,6 +3,7 @@
 from typing import Protocol
 
 from termcode.permission import Mode
+from termcode.skills.parser import SkillDef
 
 
 class UI(Protocol):
@@ -23,6 +24,7 @@ class UI(Protocol):
     def force_compact(self) -> None: ...
     def open_resume_menu(self) -> None: ...
     def clear_and_new_session(self) -> None: ...
+    def run_skill(self, skill: SkillDef, args: str) -> None: ...
     def idle(self) -> bool: ...
 
 
@@ -76,6 +78,9 @@ class NopUI:
         pass
 
     def clear_and_new_session(self) -> None:
+        pass
+
+    def run_skill(self, skill: SkillDef, args: str) -> None:
         pass
 
     def idle(self) -> bool:

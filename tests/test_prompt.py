@@ -37,7 +37,6 @@ def test_module_order_extension_and_empty_slots():
     assert [m.priority for m in modules] == list(range(10, 80, 10))
     assert [m.name for m in optional_modules()] == [
         "custom-instructions",
-        "已激活 Skill",
         "long-term-memory",
     ]
     assert all(not m.content for m in optional_modules())

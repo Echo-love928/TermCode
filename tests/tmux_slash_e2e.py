@@ -19,7 +19,8 @@ from termcode.session import load_session, load_usage
 
 SESSION = "ch10-slash"
 NAMES = (
-    "clear compact do exit help memory permission plan resume review session status"
+    "clear compact do exit help memory permission plan resume review "
+    "session skill status"
 ).split()
 SUMMARY = "<summary>" + "\n".join(SUMMARY_TITLES) + "</summary>"
 STATUS_KEYS = ["Mode", "Tokens", "Tools", "Memories", "Model", "Directory"]
@@ -163,16 +164,19 @@ class SlashRun(TmuxRun):
         self.send(SESSION, "/")
         self.until(lambda p: self.candidates(p) == NAMES[:8], "C1 首屏候选")
         self.evidence("C1-first-eight")
-        for _ in range(11):
+        for _ in range(len(NAMES) - 1):
             self.key(SESSION, "Down")
         self.until(lambda p: self.candidates(p) == NAMES[-8:], "C1 滚动候选")
         self.evidence("C1-scroll")
         self.send(SESSION, "s")
-        self.until(lambda p: self.candidates(p) == ["session", "status"], "C2 前缀")
+        matches = ["session", "skill", "status"]
+        self.until(lambda p: self.candidates(p) == matches, "C2 前缀")
         self.evidence("C2-prefix")
         # 保留滚动前已选中的 status，再用上下键验证高亮可切换。
         self.key(SESSION, "Up")
+        self.key(SESSION, "Up")
         self.until(lambda p: "› /session" in p.split("❯")[-1], "C3 向上")
+        self.key(SESSION, "Down")
         self.key(SESSION, "Down")
         self.until(lambda p: "› /status" in p.split("❯")[-1], "C3 向下")
         self.evidence("C3-highlight")
@@ -182,7 +186,7 @@ class SlashRun(TmuxRun):
         )
         assert "Directory:" in self.evidence("C4-enter")
         self.send(SESSION, "/s")
-        self.until(lambda p: self.candidates(p) == ["session", "status"], "C5 补全")
+        self.until(lambda p: self.candidates(p) == matches, "C5 补全")
         self.key(SESSION, "Escape")
         self.until(lambda p: not self.candidates(p) and "❯  /s" in p, "C5 取消")
         self.evidence("C5-escape")
@@ -193,7 +197,7 @@ class SlashRun(TmuxRun):
         )
         self.evidence("C6-backspace")
         self.send(SESSION, "/s")
-        self.until(lambda p: self.candidates(p) == ["session", "status"], "C7 补全")
+        self.until(lambda p: self.candidates(p) == matches, "C7 补全")
         self.key(SESSION, "Tab")
         self.until(lambda p: "Session:" in p and not self.candidates(p), "C7 Tab")
         self.evidence("C7-tab")

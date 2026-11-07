@@ -13,6 +13,7 @@ from termcode.compact import new_session_context
 from termcode.conversation import Conversation
 from termcode.permission import Mode
 from termcode.session import Writer
+from termcode.skills.parser import SkillDef
 from termcode.tui.compact import format_compact_notice
 from termcode.tui.view import error_block
 
@@ -45,6 +46,19 @@ class CommandUI:
     def inject_and_send(self, display_label: str, preset_prompt: str) -> None:
         self.app.conv.add_user(preset_prompt)
         self.app._begin_turn(display_label)
+
+    def run_skill(self, skill: SkillDef, args: str) -> None:
+        app = self.app
+        app._ensure_agent()
+        executor = app.skill_executor
+        if executor is None:
+            raise RuntimeError("Skill 执行器未就绪")
+        trigger = f"/{skill.name}" + (f" {args}" if args else "")
+        if skill.mode == "fork":
+            app._begin_turn(trigger, fork=(skill, args))
+            return
+        executor.execute_inline(skill, args)
+        self.inject_and_send(trigger, f"请执行已激活的 Skill {trigger}")
 
     def usage_in(self) -> int:
         return self.app.usage_in
@@ -172,14 +186,30 @@ async def dispatch_slash(app: TermCodeApp, text: str) -> bool:
         return False
     ui = app.command_ui
     app._pending_println.clear()
-    cmd = app.cmd_registry.lookup(name)
+    args = ""
+    if name:
+        cmd = app.cmd_registry.lookup(name)
+    else:
+        cmd = None
+        slash_text = text.strip()[1:]
+        parts = (
+            slash_text.split(maxsplit=1) if slash_text == slash_text.lstrip() else []
+        )
+        if len(parts) == 2:
+            name, args = parts
+            cmd = app.cmd_registry.lookup(name, base_only=name.lower() == "skill")
+            if cmd is not None and cmd.argument_handler is None:
+                cmd = None
     if cmd is None:
         ui.println("未知命令：输入 /help 查看可用命令")
     elif cmd.kind != Kind.LOCAL and (not ui.idle() or app._quitting):
         ui.error("请等待当前任务完成")
     else:
         try:
-            await cmd.handler(ui)
+            if cmd.argument_handler is not None:
+                await cmd.argument_handler(ui, args)
+            else:
+                await cmd.handler(ui)
             if ui.resume_task is not None:
                 await ui.resume_task
                 ui.resume_task = None

@@ -95,6 +95,18 @@ class Registry:
         tool = self.get(name)
         return tool is not None and getattr(tool, "read_only", False) is True
 
+    def is_concurrency_safe(self, name: str) -> bool:
+        return self.is_read_only(name) and getattr(
+            self.get(name), "is_concurrency_safe", True
+        )
+
+    def without(self, names: frozenset[str]) -> "Registry":
+        registry = Registry()
+        for name, tool in self._tools.items():
+            if name not in names:
+                registry.register(tool)
+        return registry
+
     async def execute(
         self,
         name: str,

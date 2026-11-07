@@ -13,7 +13,7 @@ from textual.app import ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 
-from termcode.agent import Agent, SessionRuntime
+from termcode.agent import SessionRuntime
 from termcode.compact import open_session_context
 from termcode.compact.const import AUTO_SAFETY_MARGIN, SUMMARY_RESERVE
 from termcode.compact.token import estimate_tokens
@@ -148,15 +148,7 @@ async def do_resume_session(app: TermCodeApp, info: SessionInfo) -> None:
             runtime = SessionRuntime(
                 session=context, context_window=app.runtime.context_window
             )
-            agent = Agent(
-                provider,
-                app._tool_registry,
-                engine=app.engine,
-                runtime=runtime,
-                memory_manager=app.mem_mgr,
-                instruction_text=app.instruction_text,
-                memory_text=app.memory_text,
-            )
+            agent = app._create_agent(provider, runtime)
             threshold = runtime.context_window - SUMMARY_RESERVE - AUTO_SAFETY_MARGIN
             compacted = False
             if conv.length() and estimate_tokens(0, msgs, 0) > threshold:
@@ -175,7 +167,8 @@ async def do_resume_session(app: TermCodeApp, info: SessionInfo) -> None:
                     "如需最新信息请重新读取相关文件。"
                 )
             old_writer = app.writer
-            app.conv, app.writer, app.runtime, app.agent = conv, writer, runtime, agent
+            app.conv, app.writer, app.runtime = conv, writer, runtime
+            app._bind_agent(agent)
             writer = None
             app.usage_in, app.usage_out = usage
             app._refresh_statusbar()
