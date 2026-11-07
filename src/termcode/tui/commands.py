@@ -1,124 +1,192 @@
-"""斜杠命令注册表与统一压缩提示。"""
+"""将命令 UI 协议映射到现有 App，集中处理错误与忙碌状态。"""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from rich.text import Text
 
 from termcode.agent import NOTICE_CANCELLED, CompactEvent, CompactPhase
+from termcode.command import Kind, parse
+from termcode.compact import new_session_context
+from termcode.conversation import Conversation
 from termcode.permission import Mode
-from termcode.prompt import EXECUTE_DIRECTIVE
+from termcode.session import Writer
+from termcode.tui.compact import format_compact_notice
+from termcode.tui.view import error_block
 
 if TYPE_CHECKING:
     from termcode.tui.app import TermCodeApp
 
-CommandHandler = Callable[["TermCodeApp"], Awaitable[None]]
 
+class CommandUI:
+    """使用适配器，避免协议方法与 App 现有的 mode、usage 字段同名。"""
 
-def format_compact_notice(event: CompactEvent) -> str:
-    if event.phase == CompactPhase.BEFORE_AUTO:
-        return "正在压缩上下文..."
-    if event.phase == CompactPhase.BEFORE_EMERGENCY:
-        return "上下文撞墙，自动压缩中..."
-    if event.err is not None:
-        return f"压缩失败：{event.err}"
-    return f"已压缩，token 从 {event.before} 降至 {event.after}"
+    def __init__(self, app: TermCodeApp) -> None:
+        self.app = app
+        self.quit_task: asyncio.Task[None] | None = None
+        self.resume_task: asyncio.Task[None] | None = None
 
+    def println(self, msg: str) -> None:
+        self.app._pending_println.append(msg)
 
-async def handle_exit(app: TermCodeApp) -> None:
-    await app.action_quit()
+    def error(self, msg: str) -> None:
+        self.app._pending_println.append(f"ERROR\x00{msg}")
 
+    def mode(self) -> Mode:
+        return self.app.mode
 
-async def handle_plan(app: TermCodeApp) -> None:
-    app.mode = Mode.PLAN
-    app._write(Text("已进入计划模式（只读工具）；/do 开始执行。", style="dim"))
-    app._refresh_statusbar()
+    def set_mode(self, mode: Mode) -> None:
+        self.app.mode = mode
+        if self.app.is_running:
+            self.app._refresh_statusbar()
 
+    def inject_and_send(self, display_label: str, preset_prompt: str) -> None:
+        self.app.conv.add_user(preset_prompt)
+        self.app._begin_turn(display_label)
 
-async def handle_memory(app: TermCodeApp) -> None:
-    from termcode.tui.memory import show_memory
+    def usage_in(self) -> int:
+        return self.app.usage_in
 
-    await show_memory(app)
+    def usage_out(self) -> int:
+        return self.app.usage_out
 
+    def model_name(self) -> str:
+        return self.app.provider.model if self.app.provider else ""
 
-async def handle_do(app: TermCodeApp) -> None:
-    app.mode = Mode.DEFAULT
-    app.conv.add_user(EXECUTE_DIRECTIVE)
-    app._begin_turn("/do")
+    def cwd(self) -> str:
+        return self.app.workspace
 
+    def tool_count(self) -> int:
+        return self.app._tool_registry.count()
 
-async def handle_compact(app: TermCodeApp) -> None:
-    from termcode.tui.app import ChatInput, SessionState
+    def memory_files(self) -> list[str]:
+        if self.app.mem_mgr is None:
+            return []
+        project, user = self.app.mem_mgr.list_files()
+        return project + user
 
-    agent = app._ensure_agent()
-    defs = (
-        app._tool_registry.read_only_definitions()
-        if app.mode == Mode.PLAN
-        else app._tool_registry.definitions()
-    )
-    app._manual_compact = True
-    app.state = SessionState.STREAMING
-    app.turn_cancel = asyncio.Event()
-    app.query_one("#input", ChatInput).read_only = True
-    app._write(Text("正在压缩上下文...", style="dim"))
+    def session_path(self) -> str:
+        return self.app.writer.path if self.app.writer else ""
 
-    async def compact() -> None:
+    def session_id(self) -> str:
+        return self.app.runtime.session.session_id if self.app.writer else ""
+
+    def idle(self) -> bool:
+        from termcode.tui.app import SessionState
+
+        return self.app.state == SessionState.IDLE
+
+    def quit(self) -> None:
+        self.quit_task = asyncio.create_task(self.app.action_quit())
+
+    def force_compact(self) -> None:
+        from termcode.tui.app import SessionState
+
+        app = self.app
+        if app.agent is None:
+            self.error("agent 未就绪")
+            return
+        app._manual_compact = True
+        app.state = SessionState.STREAMING
+        app.turn_cancel = asyncio.Event()
+        self.println("正在压缩上下文...")
+        app._stream_task = asyncio.create_task(self._run_force_compact())
+
+    async def _run_force_compact(self) -> None:
+        app = self.app
         try:
-            before, after = await agent.run_force_compact(app.conv, defs)
-            result = CompactEvent(CompactPhase.AFTER_AUTO, before, after)
-            app._write(Text(app._clean(format_compact_notice(result)), style="dim"))
+            defs = (
+                app._tool_registry.read_only_definitions()
+                if app.mode == Mode.PLAN
+                else app._tool_registry.definitions()
+            )
+            before, after = await app._ensure_agent().run_force_compact(app.conv, defs)
+            event = CompactEvent(CompactPhase.AFTER_AUTO, before, after)
+            self.println(format_compact_notice(event))
         except asyncio.CancelledError:
             if not app._quitting:
-                app._write(Text(NOTICE_CANCELLED, style="dim"))
+                self.println(NOTICE_CANCELLED)
             raise
         except Exception as exc:
-            result = CompactEvent(CompactPhase.AFTER_AUTO, err=exc)
-            app._write(Text(app._clean(format_compact_notice(result)), style="dim"))
+            event = CompactEvent(CompactPhase.AFTER_AUTO, err=exc)
+            self.println(format_compact_notice(event))
         finally:
             app._manual_compact = False
             if not app._quitting:
+                flush_output(app)
                 app._return_to_idle()
 
-    app._stream_task = asyncio.create_task(compact())
+    def open_resume_menu(self) -> None:
+        from termcode.tui.app import SessionState
+        from termcode.tui.resume import open_resume_menu
+
+        # 启动异步目录查询前先占用状态，防止相邻提交并发修改会话。
+        self.app.state = SessionState.RESUMING
+        self.resume_task = asyncio.create_task(open_resume_menu(self.app))
+        self.app._stream_task = self.resume_task
+
+    def clear_and_new_session(self) -> None:
+        from textual.widgets import RichLog
+
+        app = self.app
+        if app.runtime.run_lock.locked():
+            raise RuntimeError("请等待当前任务完成")
+        context = new_session_context(app.workspace)
+        writer = Writer(context.session_dir, self.model_name())
+        conv = Conversation(writer.on_append, writer.on_replace)
+        old_writer = app.writer
+        try:
+            if old_writer:
+                old_writer.close()
+        except Exception:
+            writer.close()
+            raise
+        app.runtime.reset_for_new_session(context)
+        app.writer, app.conv = writer, conv
+        app.iter = app.usage_in = app.usage_out = 0
+        app.cur_reply = ""
+        app.cur_tools = []
+        app._transcript.clear()
+        if app.is_running:
+            app.query_one("#log", RichLog).clear()
+            app._refresh_statusbar()
+        self.println("已清空当前会话，开启新 session")
 
 
-BUILTIN_COMMANDS: dict[str, CommandHandler] = {
-    "/exit": handle_exit,
-    "/plan": handle_plan,
-    "/do": handle_do,
-    "/compact": handle_compact,
-    "/memory": handle_memory,
-}
+def flush_output(app: TermCodeApp) -> None:
+    if not app.is_running or not app.screen_stack[0].query("#log"):
+        return
+    pending, app._pending_println = app._pending_println, []
+    for msg in pending:
+        if msg.startswith("ERROR\x00"):
+            app._write(error_block(app._clean(msg[6:]), 0))
+        else:
+            app._write(Text(app._clean(msg), style="dim"))
 
 
-async def handle_resume(app: TermCodeApp) -> None:
-    from termcode.tui.resume import begin_resume
-
-    await begin_resume(app)
-
-
-BUILTIN_COMMANDS["/resume"] = handle_resume
-
-
-def dispatch_command(input_: str) -> tuple[CommandHandler | None, bool]:
-    text = input_.strip()
-    if not text.startswith("/"):
-        return None, False
-    handler = BUILTIN_COMMANDS.get(text)
-    if handler is not None:
-        return handler, True
-
-    async def unknown_command(app: TermCodeApp) -> None:
-        app._write(
-            Text(
-                app._clean(
-                    f"未知命令: {text}，可用命令: " + " ".join(BUILTIN_COMMANDS)
-                ),
-                style="dim",
-            )
-        )
-
-    return unknown_command, True
+async def dispatch_slash(app: TermCodeApp, text: str) -> bool:
+    name, is_slash = parse(text)
+    if not is_slash:
+        return False
+    ui = app.command_ui
+    app._pending_println.clear()
+    cmd = app.cmd_registry.lookup(name)
+    if cmd is None:
+        ui.println("未知命令：输入 /help 查看可用命令")
+    elif cmd.kind != Kind.LOCAL and (not ui.idle() or app._quitting):
+        ui.error("请等待当前任务完成")
+    else:
+        try:
+            await cmd.handler(ui)
+            if ui.resume_task is not None:
+                await ui.resume_task
+                ui.resume_task = None
+            if ui.quit_task is not None:
+                await ui.quit_task
+                ui.quit_task = None
+        except Exception as exc:
+            ui.error(str(exc))
+    flush_output(app)
+    return True

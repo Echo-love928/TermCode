@@ -38,6 +38,12 @@ class Manager:
     def tools(self) -> list[McpTool]:
         return list(self._tools)
 
+    def cancel_pending(self) -> None:
+        """通知各连接任务取消，资源仍由各任务自己退栈。"""
+        self._stop.set()
+        for task in self._tasks:
+            task.cancel()
+
     async def close(self) -> None:
         self._stop.set()
         if self._closed or not self._tasks:

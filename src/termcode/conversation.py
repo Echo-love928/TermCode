@@ -20,12 +20,17 @@ class Conversation:
         self._on_replace = on_replace
 
     @classmethod
-    def from_messages(cls, msgs: list[Message], on_append=None, on_replace=None):
+    def from_messages(
+        cls,
+        msgs: list[Message],
+        on_append: Callable[[Message], None] | None = None,
+        on_replace: Callable[[list[Message]], None] | None = None,
+    ) -> "Conversation":
         conv = cls(on_append, on_replace)
         conv._messages = copy.deepcopy(msgs)
         return conv
 
-    def _notify(self, callback, value) -> None:
+    def _notify[T](self, callback: Callable[[T], None] | None, value: T) -> None:
         if callback is not None:
             try:
                 callback(copy.deepcopy(value))

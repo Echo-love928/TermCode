@@ -25,7 +25,7 @@ class MemoryCommandRun(TmuxRun):
             self.capture(session, capture_name)
             assert len(self.server.requests) == requests
 
-        command("暂无已保存的记忆", "memory-command-empty")
+        command("无已加载的记忆文件", "memory-command-empty")
         assert not self.server.requests
         user_store = Store(str(isolated_home / ".termcode/memory"))
         project_store = Store(str(work / ".termcode/memory"))
@@ -56,24 +56,24 @@ class MemoryCommandRun(TmuxRun):
             for store in (user_store, project_store)
             for path in store.directory.glob("*.md")
         }
-        command("项目使用 Python 和 Textual", "memory-command-populated")
+        command("user_preference_background.md", "memory-command-populated")
         text = self.capture(session)
-        assert "Memories (2 entries):" in text
-        assert "[user]" in text and "[project]" in text
-        assert "28届" in text and "AI Agent" in text
+        assert "MEMORY.md" in text and "project_knowledge_stack.md" in text
+        assert "28届" not in text and "Python 和 Textual" not in text
         assert all(path.read_bytes() == data for path, data in before.items())
 
         user_store.apply(
             [
                 dict(
-                    action="update",
-                    filename="user_preference_background.md",
+                    action="create",
+                    type="user_preference",
+                    slug="goals",
                     title="最新用户画像",
                     content="最新学习目标：多智能体开发。",
                 )
             ]
         )
-        command("最新学习目标", "memory-command-refreshed")
+        command("user_preference_goals.md", "memory-command-refreshed")
         assert not self.server.requests
         self.tmux("resize-window", "-t", session, "-x", "38", "-y", "20")
         self.wait(lambda: "Send a message" in self.capture(session), "窄屏输入框")
@@ -96,7 +96,7 @@ class MemoryCommandRun(TmuxRun):
         assert all(row.get("content") != "/memory" for row in rows)
         result = self.results | {
             "empty_state": True,
-            "both_levels_and_full_body": True,
+            "both_levels_filenames_only": True,
             "live_file_refresh": True,
             "read_only": True,
             "memory_command_model_requests": 0,

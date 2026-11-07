@@ -85,6 +85,7 @@ async def _run(config: ProviderConfig) -> None:
             mem_mgr=mem_mgr,
             instruction_text=instruction_text,
             memory_text=memory_text,
+            cancel_background=manager.cancel_pending,
         )
         try:
             await app.run_async(inline=True)

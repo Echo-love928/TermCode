@@ -2,7 +2,7 @@
 
 from .cleanup import clean_expired
 from .list import SessionInfo, list_sessions
-from .load import last_timestamp, load_session
+from .load import last_timestamp, load_session, load_usage
 from .writer import Writer
 
 __all__ = [
@@ -10,6 +10,7 @@ __all__ = [
     "SessionInfo",
     "list_sessions",
     "load_session",
+    "load_usage",
     "last_timestamp",
     "clean_expired",
 ]

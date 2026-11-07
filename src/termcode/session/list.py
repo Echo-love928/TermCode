@@ -20,7 +20,7 @@ class SessionInfo:
 
 def list_sessions(sessions_dir: str) -> list[SessionInfo]:
     root = Path(sessions_dir)
-    result = []
+    result: list[SessionInfo] = []
     if not root.is_dir():
         return result
     for directory in root.iterdir():

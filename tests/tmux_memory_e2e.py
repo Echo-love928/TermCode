@@ -6,6 +6,8 @@ import sys
 
 from tmux_e2e import EVIDENCE, TmuxRun
 
+from termcode.session import load_session
+
 
 class MemoryRun(TmuxRun):
     def run(self):
@@ -86,7 +88,7 @@ class MemoryRun(TmuxRun):
             archive = next(p for p in files if "CH09_TOOL_DONE" in p.read_text())
             rows = [json.loads(line) for line in archive.read_text().splitlines()]
             assert rows[0]["model"] == "test-model"
-            assert [r["role"] for r in rows] == [
+            assert [r["role"] for r in rows if "role" in r] == [
                 "user",
                 "assistant",
                 "tool",
@@ -104,10 +106,10 @@ class MemoryRun(TmuxRun):
                 self.server.requests[-1]["body"], ensure_ascii=False
             )
             self.wait(
-                lambda archive=archive: len(archive.read_text().splitlines()) == 6,
+                lambda archive=archive: len(load_session(str(archive.parent))) == 6,
                 "第二轮存档完成",
             )
-            count = len(archive.read_text().splitlines())
+            count = len(load_session(str(archive.parent)))
             self.send(session, "/resume")
             self.key(session, "Enter")
             self.wait(
@@ -147,7 +149,7 @@ class MemoryRun(TmuxRun):
             )
             self.wait(
                 lambda archive=archive, count=count: (
-                    len(archive.read_text().splitlines()) == count + 2
+                    len(load_session(str(archive.parent))) == count + 2
                 ),
                 "恢复后回复刷盘",
             )
@@ -160,7 +162,7 @@ class MemoryRun(TmuxRun):
             )
             self.results[protocol] = {
                 "archive": str(archive),
-                "rows": count + 2,
+                "messages": count + 2,
                 "tools": True,
                 "memory": True,
                 "resume": True,

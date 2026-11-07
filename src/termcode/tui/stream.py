@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from contextlib import aclosing
 from typing import TYPE_CHECKING
@@ -11,7 +12,7 @@ from rich.text import Text
 
 from termcode.agent import NOTICE_CANCELLED, ApprovalRequest, Phase
 from termcode.permission import Outcome
-from termcode.tui.commands import format_compact_notice
+from termcode.tui.compact import format_compact_notice
 from termcode.tui.view import render_markdown, tool_line, tool_result_summary
 
 if TYPE_CHECKING:
@@ -74,6 +75,13 @@ async def consume_stream(app: TermCodeApp) -> None:
                     app.usage_in += event.usage.input
                     app.usage_out += event.usage.output
                     app._refresh_statusbar()
+                    if app.writer is not None:
+                        try:
+                            await asyncio.to_thread(
+                                app.writer.write_usage, app.usage_in, app.usage_out
+                            )
+                        except OSError:
+                            logging.getLogger(__name__).warning("会话用量存档失败")
                 if event.notice:
                     if app.cur_reply:
                         app._write(

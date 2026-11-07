@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rich.text import Text
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
@@ -24,6 +24,7 @@ from termcode.session import (
     last_timestamp,
     list_sessions,
     load_session,
+    load_usage,
 )
 
 if TYPE_CHECKING:
@@ -87,7 +88,7 @@ class ResumeScreen(ModalScreen[str | None]):
     def search(self, event: Input.Changed) -> None:
         self.filter_items(event.value)
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: events.Key) -> None:
         options = self.query_one(OptionList)
         if event.key in {"up", "down"}:
             event.stop()
@@ -108,13 +109,9 @@ class ResumeScreen(ModalScreen[str | None]):
         self.dismiss(self.filtered[event.option_index].id)
 
 
-async def begin_resume(app: TermCodeApp) -> None:
+async def open_resume_menu(app: TermCodeApp) -> None:
     from termcode.tui.app import SessionState
 
-    if app.state != SessionState.IDLE:
-        app._write(Text("请等待当前任务完成"))
-        return
-    app.state = SessionState.RESUMING
     try:
         items = await asyncio.to_thread(list_sessions, app.sessions_dir)
     except OSError:
@@ -139,16 +136,20 @@ async def do_resume_session(app: TermCodeApp, info: SessionInfo) -> None:
     writer = None
     app._write(Text("正在恢复会话...", style="dim"))
     try:
+        provider = app.provider
+        if provider is None:
+            raise RuntimeError("尚未选择供应商")
         async with app.runtime.run_lock:
             context = open_session_context(app.workspace, info.id)
             msgs = await asyncio.to_thread(load_session, context.session_dir)
             stamp = await asyncio.to_thread(last_timestamp, context.session_dir)
+            usage = await asyncio.to_thread(load_usage, context.session_dir)
             conv = Conversation.from_messages(msgs)
             runtime = SessionRuntime(
                 session=context, context_window=app.runtime.context_window
             )
             agent = Agent(
-                app.provider,
+                provider,
                 app._tool_registry,
                 engine=app.engine,
                 runtime=runtime,
@@ -161,7 +162,7 @@ async def do_resume_session(app: TermCodeApp, info: SessionInfo) -> None:
             if conv.length() and estimate_tokens(0, msgs, 0) > threshold:
                 await agent.run_force_compact(conv, app._tool_registry.definitions())
                 compacted = True
-            writer = Writer.open_existing(context.session_dir, app.provider.model)
+            writer = Writer.open_existing(context.session_dir, provider.model)
             if compacted:
                 writer.replace_all(conv.messages())
             conv = Conversation.from_messages(
@@ -176,6 +177,8 @@ async def do_resume_session(app: TermCodeApp, info: SessionInfo) -> None:
             old_writer = app.writer
             app.conv, app.writer, app.runtime, app.agent = conv, writer, runtime, agent
             writer = None
+            app.usage_in, app.usage_out = usage
+            app._refresh_statusbar()
             if old_writer:
                 old_writer.close()
             for msg in conv.messages():

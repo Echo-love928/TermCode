@@ -3,6 +3,7 @@
 import asyncio
 import os
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
 from enum import Enum
@@ -20,6 +21,8 @@ from textual.widgets import OptionList, RichLog, Static, TextArea
 
 from termcode import __version__
 from termcode.agent import Agent, ApprovalRequest, SessionRuntime, ToolEvent
+from termcode.command import Registry as CommandRegistry
+from termcode.command import register_builtins
 from termcode.config import ProviderConfig, effective_context_window
 from termcode.conversation import Conversation
 from termcode.llm import Provider, new_provider
@@ -35,7 +38,8 @@ from termcode.tui.banner import (
     graphics_available,
     print_banner_image,
 )
-from termcode.tui.commands import dispatch_command
+from termcode.tui.commands import CommandUI, dispatch_slash
+from termcode.tui.complete import CompletionMenu
 from termcode.tui.select import provider_list
 from termcode.tui.stream import consume_stream, tick, update_approving
 from termcode.tui.view import (
@@ -67,7 +71,12 @@ class ChatInput(TextArea):
             super().__init__()
             self.text = text
 
-    def on_key(self, event: events.Key) -> None:
+    async def on_key(self, event: events.Key) -> None:
+        app = self.app
+        if isinstance(app, TermCodeApp) and await app._handle_completion_key(
+            event, self
+        ):
+            return
         if event.key == "shift+tab":
             # 交给应用级模式绑定，不让编辑器将其解释为反向缩进。
             return
@@ -113,6 +122,7 @@ class TermCodeApp(App[None]):
     #prompt { width: 3; height: 1; color: $accent; }
     #input { width: 1fr; height: 3; border: none; padding: 0; }
     #input:focus { border: none; }
+    #completion { height: auto; max-height: 8; margin: 0 1; }
     #statusbar { height: 1; width: 1fr; }
     """
 
@@ -127,6 +137,7 @@ class TermCodeApp(App[None]):
         mem_mgr: Manager | None = None,
         instruction_text: str = "",
         memory_text: str = "",
+        cancel_background: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         if not providers:
@@ -135,10 +146,17 @@ class TermCodeApp(App[None]):
         self.provider: Provider | None = None
         self.agent: Agent | None = None
         self.runtime = runtime if runtime is not None else SessionRuntime()
+        self.cmd_registry = CommandRegistry()
+        register_builtins(self.cmd_registry)
+        self.command_ui = CommandUI(self)
+        self.completion = CompletionMenu()
+        self._completion_text = ""
+        self._pending_println: list[str] = []
         self._manual_compact = False
         self.state = SessionState.SELECTING
         self.writer = writer
         self.mem_mgr = mem_mgr
+        self._cancel_background = cancel_background
         self.instruction_text = instruction_text
         self.memory_text = memory_text
         self.workspace = os.getcwd()
@@ -180,6 +198,7 @@ class TermCodeApp(App[None]):
         with Horizontal(id="composer"):
             yield Static("❯", id="prompt")
             yield ChatInput(id="input", placeholder="Send a message...")
+        yield Static("", id="completion", markup=False)
         yield Static("", id="statusbar", markup=False)
 
     def on_mount(self) -> None:
@@ -191,6 +210,7 @@ class TermCodeApp(App[None]):
             )
         )
         self.query_one("#streaming-scroll").display = False
+        self.query_one("#completion").display = False
         if len(self.providers) == 1:
             self._activate_provider(0)
         else:
@@ -201,13 +221,15 @@ class TermCodeApp(App[None]):
 
     def on_resize(self, event: events.Resize) -> None:
         self.call_after_refresh(self._reflow_log)
+        self.call_after_refresh(self._render_completion)
 
     def _reflow_log(self) -> None:
         """宽度改变后重新排版已完成的内容，避免旧的宽行被裁切。"""
         if not self._transcript or self._quitting:
             return
-        self.query_one("#startup-artwork", BannerArtwork).fit_to_window()
-        log = self.query_one("#log", RichLog)
+        screen = self.screen_stack[0]
+        screen.query_one("#startup-artwork", BannerArtwork).fit_to_window()
+        log = screen.query_one("#log", RichLog)
         log.clear()
         for block in self._transcript:
             log.write(block)
@@ -215,8 +237,10 @@ class TermCodeApp(App[None]):
 
     def _write(self, block: RenderableType) -> None:
         self._transcript.append(block)
-        self.query_one("#transcript", TranscriptViewport).follow_tail = True
-        log = self.query_one("#log", RichLog)
+        # 恢复弹窗存在时，本地查询仍写入下方的主对话区。
+        screen = self.screen_stack[0]
+        screen.query_one("#transcript", TranscriptViewport).follow_tail = True
+        log = screen.query_one("#log", RichLog)
         log.write(block)
         log.refresh(layout=True)
 
@@ -280,21 +304,88 @@ class TermCodeApp(App[None]):
         await self.submit(event.text)
 
     async def submit(self, text: str) -> None:
-        if text.strip() == "/resume" and self.state != SessionState.IDLE:
+        if self._quitting or not text.strip():
+            return
+        if text.strip().startswith("/"):
             if self.state != SessionState.RESUMING:
                 self.query_one("#input", ChatInput).clear()
-            self._write(Text("请等待当前任务完成", style="dim"))
+            self.completion.hide()
+            self._render_completion()
+            await self.dispatch_slash(text)
             return
-        if self.state != SessionState.IDLE or self._quitting or not text.strip():
+        if self.state != SessionState.IDLE:
             return
-        editor = self.query_one("#input", ChatInput)
-        editor.clear()
-        handler, command = dispatch_command(text)
-        if command and handler is not None:
-            await handler(self)
-            return
+        self.query_one("#input", ChatInput).clear()
+        self.completion.hide()
+        self._render_completion()
         self.conv.add_user(text)
         self._begin_turn(text)
+
+    async def dispatch_slash(self, text: str) -> bool:
+        return await dispatch_slash(self, text)
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if (
+            event.text_area.id == "input"
+            and event.text_area.is_mounted
+            and not self._quitting
+            and self.state != SessionState.RESUMING
+        ):
+            self._sync_completion_from_input(event.text_area.text)
+
+    def _sync_completion_from_input(self, text: str) -> None:
+        if text != self._completion_text:
+            self._completion_text = text
+            if self.state == SessionState.IDLE:
+                self.completion.update(text, self.cmd_registry)
+            else:
+                self.completion.hide()
+        self._render_completion()
+
+    def _render_completion(self) -> None:
+        if not self.is_running or self._quitting:
+            return
+        widgets = self.query("#completion")
+        if not widgets:
+            return
+        widget = widgets.first(Static)
+        widget.display = self.completion.active and self.state == SessionState.IDLE
+        # 矮终端保留输入框、状态栏和至少两行会话区。
+        self.completion.set_rows(self.size.height - 8)
+        widget.update(self.completion.render(max(1, self.size.width - 2)))
+
+    async def _handle_completion_key(
+        self, event: events.Key, editor: ChatInput
+    ) -> bool:
+        if self.state != SessionState.IDLE or event.key not in {
+            "up",
+            "down",
+            "escape",
+            "enter",
+            "tab",
+        }:
+            return False
+        # 与编辑器同一队列处理，突发键入后立即回车也使用最新输入。
+        self._sync_completion_from_input(editor.text)
+        if not self.completion.active:
+            return False
+        event.stop()
+        event.prevent_default()
+        if event.key == "up":
+            self.completion.move_up()
+        elif event.key == "down":
+            self.completion.move_down()
+        elif event.key == "escape":
+            self.completion.hide()
+        else:
+            selected = self.completion.selected()
+            self.completion.hide()
+            if selected is not None:
+                await self.submit("/" + selected.name)
+            elif event.key == "enter":
+                await self.submit(editor.text)
+        self._render_completion()
+        return True
 
     def _begin_turn(self, text: str) -> None:
         editor = self.query_one("#input", ChatInput)
@@ -302,7 +393,7 @@ class TermCodeApp(App[None]):
         self._refresh_statusbar()
         self.turn_cancel = asyncio.Event()
         self.iter = 0
-        # 运行中允许编辑草稿和提交 /resume 提示，submit 仍阻止并发对话。
+        # 运行中允许编辑草稿和使用本地查询，submit 仍阻止并发对话。
         editor.read_only = False
         self.cur_reply = ""
         self.turn_start = time.monotonic()
@@ -379,6 +470,8 @@ class TermCodeApp(App[None]):
         editor = self.query_one("#input", ChatInput)
         editor.read_only = False
         editor.focus()
+        self._completion_text = ""
+        self._sync_completion_from_input(editor.text)
 
     def action_history_up(self) -> None:
         viewport = self.query_one("#transcript", TranscriptViewport)
@@ -401,6 +494,11 @@ class TermCodeApp(App[None]):
                 await asyncio.wait_for(self.provider.aclose(), timeout=2)
 
     def action_cancel_turn(self) -> None:
+        if self.completion.active:
+            self.completion.hide()
+            self._render_completion()
+            self.query_one("#input", ChatInput).focus()
+            return
         if self.state == SessionState.RESUMING:
             from termcode.tui.resume import ResumeScreen
 
@@ -437,6 +535,10 @@ class TermCodeApp(App[None]):
 
     async def action_quit(self) -> None:
         self._quitting = True
+        if self._cancel_background:
+            self._cancel_background()
+        if self.mem_mgr:
+            self.mem_mgr.cancel_pending()
         if self._timer:
             self._timer.stop()
             self._timer = None

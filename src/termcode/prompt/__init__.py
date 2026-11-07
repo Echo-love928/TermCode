@@ -16,6 +16,7 @@ from termcode.prompt.reminder import (
 
 __all__ = [
     "EXECUTE_DIRECTIVE",
+    "READY_HINT",
     "Environment",
     "Module",
     "assemble_system",
@@ -45,9 +46,7 @@ def build_system_prompt(instructions: str = "", memory: str = "") -> str:
 
 
 BANNER_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "startup-banner.png"
-_READY_TEXT = (
-    "就绪 · Enter 发送 · Alt+Enter 换行 · Esc 取消 · /plan 计划 · /do 执行 · /exit 退出"
-)
+READY_HINT = "就绪 · Enter 发送 · Alt+Enter 换行 · Esc 取消 · 输入 /help 查看可用命令"
 
 
 @dataclass(frozen=True)
@@ -65,8 +64,8 @@ class StartupBanner:
         yield Text(title, style="bold #ffae4a")
         yield Text(self.cwd)
         yield Text("")
-        yield Text(_READY_TEXT)
+        yield Text(READY_HINT)
 
 
 def render_banner(version: str, cwd: str) -> str:
-    return f"TermCode v{version}\n{cwd}\n\n{_READY_TEXT}"
+    return f"TermCode v{version}\n{cwd}\n\n{READY_HINT}"

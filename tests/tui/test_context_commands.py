@@ -7,14 +7,11 @@ from test_tui import local_config, transcript, wait_for
 from textual.widgets import OptionList
 
 from termcode.agent import CompactEvent, CompactPhase, Event
+from termcode.command import Registry, parse, register_builtins
 from termcode.permission import Mode
 from termcode.prompt import EXECUTE_DIRECTIVE
 from termcode.tui.app import SessionState, TermCodeApp
-from termcode.tui.commands import (
-    BUILTIN_COMMANDS,
-    dispatch_command,
-    format_compact_notice,
-)
+from termcode.tui.compact import format_compact_notice
 
 
 class FakeAgent:
@@ -67,7 +64,7 @@ async def test_unknown_and_plan_commands_do_not_enter_history(sse_server):
         app.agent = fake
         await app.submit("/unknown")
         assert "未知命令" in transcript(app)
-        assert all(command in transcript(app) for command in BUILTIN_COMMANDS)
+        assert "/help" in transcript(app)
         await app.submit("/plan")
         assert app.mode == Mode.PLAN
         assert "已进入计划模式" in transcript(app)
@@ -179,10 +176,12 @@ async def test_multi_provider_selection_sets_window_and_persists_runtime(sse_ser
 
 
 def test_dispatch_registry():
-    assert len(BUILTIN_COMMANDS) == 6
-    assert dispatch_command("/memory") == (BUILTIN_COMMANDS["/memory"], True)
-    assert dispatch_command("普通输入") == (None, False)
-    assert dispatch_command("/unknown")[1]
+    reg = Registry()
+    register_builtins(reg)
+    assert len(reg.visible()) == 12
+    assert reg.lookup("memory") is not None
+    assert parse("普通输入") == ("", False)
+    assert parse("/unknown") == ("unknown", True)
 
 
 @pytest.mark.parametrize("emergency", [False, True])

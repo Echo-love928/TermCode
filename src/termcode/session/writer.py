@@ -16,7 +16,9 @@ class Writer:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.model = model
         self._lock = threading.RLock()
-        self._file = (self.directory / "conversation.jsonl").open("a+b")
+        archive = self.directory / "conversation.jsonl"
+        self.path = str(archive.resolve())
+        self._file = archive.open("a+b")
         # 崩溃留下半行时先隔开，避免下一条有效消息与坏行粘连。
         self._file.seek(0, os.SEEK_END)
         self._first = self._file.tell() == 0
@@ -55,6 +57,11 @@ class Writer:
     on_append = append
     append_message = append
 
+    def write_usage(self, tokens_in: int, tokens_out: int) -> None:
+        """保留会话累计用量，独立于可被压缩替换的消息。"""
+        with self._lock:
+            self._write({"type": "usage", "input": tokens_in, "output": tokens_out})
+
     def write_compact_marker(self) -> None:
         with self._lock:
             self._write({"type": "compact", "ts": int(time.time())})
@@ -78,5 +85,5 @@ class Writer:
     def __enter__(self) -> "Writer":
         return self
 
-    def __exit__(self, *args) -> None:
+    def __exit__(self, *args: object) -> None:
         self.close()

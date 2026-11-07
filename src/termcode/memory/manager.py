@@ -29,6 +29,29 @@ class Manager:
     def set_provider(self, provider: Provider, model: str) -> None:
         self.provider, self.model = provider, model
 
+    def list_files(self) -> tuple[list[str], list[str]]:
+        """只列文件名，不读取笔记正文或创建目录。"""
+        results = []
+        for store in (self.project_store, self.user_store):
+            try:
+                names = sorted(
+                    path.name
+                    for path in store.directory.iterdir()
+                    if path.suffix == ".md" and path.is_file() and not path.is_symlink()
+                )
+            except FileNotFoundError:
+                names = []
+            except OSError:
+                logging.getLogger(__name__).warning("无法列出记忆文件")
+                names = []
+            results.append(names)
+        return results[0], results[1]
+
+    def cancel_pending(self) -> None:
+        """退出时立即通知所有后台记忆任务取消。"""
+        for task in self._tasks:
+            task.cancel()
+
     def load_index(self) -> str:
         parts = []
         for label, store in [

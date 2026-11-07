@@ -123,7 +123,15 @@ def test_double_reinforcement_and_reminder_semantics():
     for reminder in (full, short):
         assert reminder.startswith("<system-reminder>\n")
         assert reminder.endswith("\n</system-reminder>")
-        assert "只读工具" in reminder and "/do" in reminder
+        assert "只读工具" in reminder and "批准执行" in reminder
     assert len(short) < len(full)
     assert "分步计划" in full
     assert system_reminder("") == ""
+
+
+def test_ready_hint_only_links_help():
+    from termcode.prompt import READY_HINT, render_banner
+
+    assert "/help" in READY_HINT
+    assert READY_HINT in render_banner("test", "/workspace")
+    assert "/plan" not in READY_HINT and "/do" not in READY_HINT
