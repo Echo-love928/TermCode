@@ -10,6 +10,7 @@ NAMES = [
     "do",
     "exit",
     "help",
+    "hooks",
     "memory",
     "permission",
     "plan",
@@ -63,7 +64,7 @@ def registry():
 def test_register_builtins_all_registered():
     commands = registry().visible()
     assert [cmd.name for cmd in commands] == NAMES
-    assert sum(cmd.kind == Kind.LOCAL for cmd in commands) == 5
+    assert sum(cmd.kind == Kind.LOCAL for cmd in commands) == 6
     assert sum(cmd.kind == Kind.UI for cmd in commands) == 5
     assert sum(cmd.kind == Kind.PROMPT for cmd in commands) == 2
     assert all(cmd.description and not cmd.hidden for cmd in commands)
@@ -89,7 +90,7 @@ async def test_help_uses_current_registry_and_hides_hidden():
     ui = RecordingUI()
     await reg.lookup("help").handler(ui)
     rows = ui.output[0].splitlines()
-    assert len(rows) == 13
+    assert len(rows) == len(NAMES) + 1
     assert [row.split()[0][1:] for row in rows] == sorted(NAMES + ["extra"])
     assert {
         len(row) - len(reg.lookup(row.split()[0][1:]).description) for row in rows

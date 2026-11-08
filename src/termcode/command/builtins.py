@@ -14,6 +14,7 @@ def register_builtins(reg: Registry) -> None:
         Command("do", "按计划开始执行", Kind.PROMPT, prompt.handle_do),
         Command("exit", "退出 TermCode", Kind.UI, ui.handle_exit),
         Command("help", "查看可用命令", Kind.LOCAL, local.make_help_handler(reg)),
+        Command("hooks", "列出已加载的 Hook", Kind.LOCAL, local.handle_hooks),
         Command("memory", "列出已加载的记忆文件", Kind.LOCAL, local.handle_memory),
         Command("permission", "查看权限模式", Kind.LOCAL, local.handle_permission),
         Command("plan", "切换到计划模式", Kind.UI, ui.handle_plan),

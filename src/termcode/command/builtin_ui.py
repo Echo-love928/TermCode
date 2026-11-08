@@ -29,4 +29,4 @@ async def handle_resume(ui: UI) -> None:
 
 
 async def handle_clear(ui: UI) -> None:
-    ui.clear_and_new_session()
+    await ui.clear_and_new_session()

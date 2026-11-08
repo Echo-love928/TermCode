@@ -91,7 +91,7 @@ async def test_resume_over_budget_compacts_before_switch(
     app = TermCodeApp([local_config(sse_server)])
     calls = []
 
-    async def compact(agent, conv, defs):
+    async def compact(agent, conv, defs, mode):
         calls.append(conv.length())
         conv.replace_history([Message("user", "摘要")])
         return 10000, 10
@@ -103,7 +103,7 @@ async def test_resume_over_budget_compacts_before_switch(
         assert calls == [2]
         assert app.conv.messages() == [Message("user", "摘要")]
         archive = Path(context.session_dir) / "conversation.jsonl"
-        assert '"type":"compact"' in archive.read_text()
+        assert '"type":"compact"' in archive.read_text(encoding="utf-8")
 
 
 async def test_resume_failed_compaction_preserves_current(

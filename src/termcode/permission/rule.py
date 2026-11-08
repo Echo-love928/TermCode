@@ -3,64 +3,57 @@
 import re
 from dataclasses import dataclass, field
 
+from termcode.permission.matcher import (
+    Matcher,
+    compile_matcher,
+)
+from termcode.permission.matcher import (
+    match_pattern as match_pattern,
+)
 from termcode.permission.types import Decision
 
 
 @dataclass(frozen=True)
 class Rule:
     tool: str
-    pattern: str = ""
+    matcher: Matcher | None = None
     allow: bool = False
+    raw: str = field(default="", compare=False)
 
     def __str__(self) -> str:
-        return f"{self.tool}({self.pattern})" if self.pattern else self.tool
+        if self.raw:
+            return self.raw
+        return f"{self.tool}({self.matcher})" if self.matcher is not None else self.tool
 
 
-def parse_rule(value: str) -> tuple[Rule, bool]:
+def parse_rule(value: object) -> tuple[Rule | None, str | None]:
     if not isinstance(value, str):
-        return Rule(""), False
+        return None, "expected a string"
     match = re.fullmatch(
         r"(mcp__[A-Za-z0-9_*\-]+|[A-Za-z_][\w]*)(?:\((.*)\))?",
         value.strip(),
         re.DOTALL,
     )
     if match is None:
-        return Rule(""), False
+        return None, "expected Tool or Tool(pattern)"
     pattern = match[2] or ""
-    # 命令中的成对括号是字面内容，不能只按第一个右括号截断。
-    unescaped = re.sub(r"\\.", "", pattern)
-    if unescaped.count("(") != unescaped.count(")"):
-        return Rule(""), False
-    return Rule(match[1], pattern), True
+    # 旧 glob 保留括号校验；正则交由编译器校验，精确值按字面处理。
+    glob = pattern.lstrip("!")
+    if glob and glob[0] not in "=~":
+        unescaped = re.sub(r"\\.", "", glob)
+        if unescaped.count("(") != unescaped.count(")"):
+            return None, "unbalanced parentheses"
+    try:
+        matcher = (
+            compile_matcher(pattern, is_command=match[1] == "Bash") if pattern else None
+        )
+    except (ValueError, RecursionError) as exc:
+        return None, str(exc)
+    return Rule(match[1], matcher, raw=value.strip()), None
 
 
 def escape_glob(value: str) -> str:
-    return re.sub(r"([\\*()])", r"\\\1", value)
-
-
-def match_pattern(pattern: str, target: str, *, is_file: bool = False) -> bool:
-    if not pattern:
-        return True
-    regex = ""
-    index = 0
-    while index < len(pattern):
-        char = pattern[index]
-        if char == "\\" and index + 1 < len(pattern):
-            index += 1
-            regex += re.escape(pattern[index])
-        elif char == "*":
-            double = index + 1 < len(pattern) and pattern[index + 1] == "*"
-            if double:
-                index += 1
-            if is_file and double and pattern[index + 1 : index + 2] == "/":
-                regex += "(?:.*/)?"
-                index += 1
-            else:
-                regex += ".*" if double or not is_file else "[^/]*"
-        else:
-            regex += re.escape(char)
-        index += 1
-    return re.fullmatch(regex, target, re.DOTALL) is not None
+    return re.sub(r"([\\*()]|^[=!~])", r"\\\1", value)
 
 
 @dataclass
@@ -81,8 +74,8 @@ class RuleSet:
                     and rule.tool.startswith("mcp__")
                     and match_pattern(rule.tool, friendly)
                 )
-                if tool_matches and match_pattern(
-                    rule.pattern, target, is_file=friendly != "Bash"
+                if tool_matches and (
+                    rule.matcher is None or rule.matcher.match(target)
                 ):
                     return decision, rule
         return Decision.ALLOW, None

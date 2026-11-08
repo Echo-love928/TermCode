@@ -23,7 +23,7 @@ class FakeAgent:
         self.gate = asyncio.Event()
         self.gate.set()
 
-    async def run_force_compact(self, conv, defs):
+    async def run_force_compact(self, conv, defs, mode):
         self.force_calls += 1
         await self.gate.wait()
         if self.failure is not None:
@@ -178,7 +178,7 @@ async def test_multi_provider_selection_sets_window_and_persists_runtime(sse_ser
 def test_dispatch_registry():
     reg = Registry()
     register_builtins(reg)
-    assert len(reg.visible()) == 12
+    assert len(reg.visible()) == 13
     assert reg.lookup("memory") is not None
     assert parse("普通输入") == ("", False)
     assert parse("/unknown") == ("unknown", True)

@@ -26,6 +26,8 @@ from termcode.command import register_builtins
 from termcode.command.skills import register_skill_commands, register_skill_manager
 from termcode.config import ProviderConfig, effective_context_window
 from termcode.conversation import Conversation
+from termcode.hook import Engine as HookEngine
+from termcode.hook import Event as HookEvent
 from termcode.llm import Provider, new_provider
 from termcode.memory import Manager
 from termcode.permission import Engine, Mode, Outcome, new_engine
@@ -65,6 +67,7 @@ class SessionState(Enum):
     STREAMING = "streaming"
     APPROVING = "approving"
     RESUMING = "resuming"
+    SUBMITTING = "submitting"
 
 
 def next_mode(mode: Mode) -> Mode:
@@ -129,6 +132,7 @@ class TermCodeApp(App[None]):
     #input { width: 1fr; height: 3; border: none; padding: 0; }
     #input:focus { border: none; }
     #completion { height: auto; max-height: 8; margin: 0 1; }
+    #submit-error { height: auto; max-height: 4; margin: 0 1; color: $error; }
     #statusbar { height: 1; width: 1fr; }
     """
 
@@ -145,6 +149,7 @@ class TermCodeApp(App[None]):
         memory_text: str = "",
         cancel_background: Callable[[], None] | None = None,
         skill_loader: SkillLoader | None = None,
+        hook_engine: HookEngine | None = None,
     ) -> None:
         super().__init__()
         if not providers:
@@ -154,6 +159,11 @@ class TermCodeApp(App[None]):
         self._provider_config: ProviderConfig | None = None
         self.agent: Agent | None = None
         self.runtime = runtime if runtime is not None else SessionRuntime()
+        self.hook_engine = (
+            hook_engine if hook_engine is not None else self.runtime.hook_engine
+        )
+        self.runtime.hook_engine = self.hook_engine
+        self._hook_session_ended = False
         self.cmd_registry = CommandRegistry()
         register_builtins(self.cmd_registry)
         self.command_ui = CommandUI(self)
@@ -221,9 +231,10 @@ class TermCodeApp(App[None]):
             yield Static("❯", id="prompt")
             yield ChatInput(id="input", placeholder="Send a message...")
         yield Static("", id="completion", markup=False)
+        yield Static("", id="submit-error", markup=False)
         yield Static("", id="statusbar", markup=False)
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         self._write(
             StartupBanner(
                 self._clean(__version__),
@@ -233,10 +244,23 @@ class TermCodeApp(App[None]):
         )
         self.query_one("#streaming-scroll").display = False
         self.query_one("#completion").display = False
+        self.query_one("#submit-error").display = False
         if len(self.providers) == 1:
             self._activate_provider(0)
         else:
             self._show_selection(True)
+        await self._open_hook_session(HookEvent.SESSION_START)
+
+    async def _open_hook_session(self, event: HookEvent) -> None:
+        self._hook_session_ended = False
+        await self.runtime.dispatch_hook(event, self.workspace, self.mode)
+
+    async def end_hook_session(self) -> None:
+        if not self._hook_session_ended:
+            self._hook_session_ended = True
+            await self.runtime.dispatch_hook(
+                HookEvent.SESSION_END, self.workspace, self.mode
+            )
 
     def _clean(self, text: str) -> str:
         return clean_text(text, self._secrets)
@@ -308,6 +332,7 @@ class TermCodeApp(App[None]):
             memory_manager=self.mem_mgr,
             instruction_text=self.instruction_text,
             memory_text=self.memory_text,
+            hook_engine=self.hook_engine,
         )
 
     def _bind_agent(self, agent: Agent) -> None:
@@ -356,6 +381,8 @@ class TermCodeApp(App[None]):
     async def submit(self, text: str) -> None:
         if self._quitting or not text.strip():
             return
+        if self.state == SessionState.SUBMITTING:
+            return
         if text.strip().startswith("/"):
             if self.state != SessionState.RESUMING:
                 self.query_one("#input", ChatInput).clear()
@@ -365,7 +392,29 @@ class TermCodeApp(App[None]):
             return
         if self.state != SessionState.IDLE:
             return
-        self.query_one("#input", ChatInput).clear()
+        editor = self.query_one("#input", ChatInput)
+        if self.hook_engine is not None:
+            self.state = SessionState.SUBMITTING
+            editor.read_only = True
+            try:
+                result = await self.runtime.dispatch_hook(
+                    HookEvent.USER_PROMPT_SUBMIT,
+                    self.workspace,
+                    self.mode,
+                    {"prompt": text},
+                )
+            finally:
+                editor.read_only = False
+                self.state = SessionState.IDLE
+            if self._quitting:
+                return
+            if result.blocked:
+                error = self.query_one("#submit-error", Static)
+                error.update(self._clean(result.block_message()))
+                error.display = True
+                editor.focus()
+                return
+        editor.clear()
         self.completion.hide()
         self._render_completion()
         self.conv.add_user(text)
@@ -381,6 +430,9 @@ class TermCodeApp(App[None]):
             and not self._quitting
             and self.state != SessionState.RESUMING
         ):
+            feedback = self.query("#submit-error")
+            if feedback:
+                feedback.first().display = False
             self._sync_completion_from_input(event.text_area.text)
 
     def _sync_completion_from_input(self, text: str) -> None:
@@ -605,6 +657,7 @@ class TermCodeApp(App[None]):
                     Text("● " + self._clean(self.cur_reply) + "\n[退出时未完成]")
                 )
             self.conv.discard_pending_user()
+        await self.end_hook_session()
         await self._close_provider()
         self.exit()
 
@@ -613,6 +666,7 @@ class TermCodeApp(App[None]):
             self._stream_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._stream_task
+        await self.end_hook_session()
         await self._close_provider()
 
     def print_transcript(self, console: Console | None = None) -> None:

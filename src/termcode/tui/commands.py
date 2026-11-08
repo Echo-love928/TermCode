@@ -11,6 +11,8 @@ from termcode.agent import NOTICE_CANCELLED, CompactEvent, CompactPhase
 from termcode.command import Kind, parse
 from termcode.compact import new_session_context
 from termcode.conversation import Conversation
+from termcode.hook import Event as HookEvent
+from termcode.hook.rule import Rule
 from termcode.permission import Mode
 from termcode.session import Writer
 from termcode.skills.parser import SkillDef
@@ -81,6 +83,14 @@ class CommandUI:
         project, user = self.app.mem_mgr.list_files()
         return project + user
 
+    def hook_sources(self) -> list[str]:
+        engine = self.app.hook_engine
+        return engine.sources if engine is not None else []
+
+    def hook_rules(self) -> list[Rule]:
+        engine = self.app.hook_engine
+        return engine.rules if engine is not None else []
+
     def session_path(self) -> str:
         return self.app.writer.path if self.app.writer else ""
 
@@ -116,7 +126,9 @@ class CommandUI:
                 if app.mode == Mode.PLAN
                 else app._tool_registry.definitions()
             )
-            before, after = await app._ensure_agent().run_force_compact(app.conv, defs)
+            before, after = await app._ensure_agent().run_force_compact(
+                app.conv, defs, app.mode
+            )
             event = CompactEvent(CompactPhase.AFTER_AUTO, before, after)
             self.println(format_compact_notice(event))
         except asyncio.CancelledError:
@@ -141,8 +153,10 @@ class CommandUI:
         self.resume_task = asyncio.create_task(open_resume_menu(self.app))
         self.app._stream_task = self.resume_task
 
-    def clear_and_new_session(self) -> None:
+    async def clear_and_new_session(self) -> None:
         from textual.widgets import RichLog
+
+        from termcode.tui.app import SessionState
 
         app = self.app
         if app.runtime.run_lock.locked():
@@ -151,22 +165,26 @@ class CommandUI:
         writer = Writer(context.session_dir, self.model_name())
         conv = Conversation(writer.on_append, writer.on_replace)
         old_writer = app.writer
+        app.state = SessionState.RESUMING
         try:
+            await app.end_hook_session()
             if old_writer:
                 old_writer.close()
-        except Exception:
-            writer.close()
-            raise
-        app.runtime.reset_for_new_session(context)
-        app.writer, app.conv = writer, conv
-        app.iter = app.usage_in = app.usage_out = 0
-        app.cur_reply = ""
-        app.cur_tools = []
-        app._transcript.clear()
-        if app.is_running:
-            app.query_one("#log", RichLog).clear()
-            app._refresh_statusbar()
-        self.println("已清空当前会话，开启新 session")
+            app.runtime.reset_for_new_session(context)
+            app.writer, app.conv = writer, conv
+            app.iter = app.usage_in = app.usage_out = 0
+            app.cur_reply = ""
+            app.cur_tools = []
+            app._transcript.clear()
+            if app.is_running:
+                app.query_one("#log", RichLog).clear()
+                app._refresh_statusbar()
+            await app._open_hook_session(HookEvent.SESSION_START)
+            self.println("已清空当前会话，开启新 session")
+        finally:
+            if app.writer is not writer:
+                writer.close()
+            app.state = SessionState.IDLE
 
 
 def flush_output(app: TermCodeApp) -> None:

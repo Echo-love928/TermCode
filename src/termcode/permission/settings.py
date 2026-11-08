@@ -1,6 +1,7 @@
 """三层 YAML 配置加载、工具分类和目标提取。"""
 
 import json
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -28,9 +29,9 @@ class SettingsError(Exception):
 
 @dataclass
 class PermissionsBlock:
-    allow: list[str] = field(default_factory=list)
-    deny: list[str] = field(default_factory=list)
-    ask: list[str] = field(default_factory=list)
+    allow: list[object] = field(default_factory=list)
+    deny: list[object] = field(default_factory=list)
+    ask: list[object] = field(default_factory=list)
 
 
 @dataclass
@@ -59,9 +60,7 @@ def load_settings(path: str) -> Settings:
         entries = {}
         for key in ("allow", "deny", "ask"):
             values = block.get(key, [])
-            if not isinstance(values, list) or any(
-                not isinstance(v, str) for v in values
-            ):
+            if not isinstance(values, list):
                 raise ValueError
             entries[key] = values
         return Settings(mode, PermissionsBlock(**entries))
@@ -73,9 +72,11 @@ def to_rule_set(settings: Settings) -> RuleSet:
     rules = RuleSet()
     for key in ("allow", "deny", "ask"):
         for value in getattr(settings.permissions, key):
-            rule, ok = parse_rule(value)
-            if ok:
+            rule, err = parse_rule(value)
+            if rule is not None:
                 getattr(rules, key).append(replace(rule, allow=key == "allow"))
+            else:
+                print(f"rule {value!r} parse failed: {err}", file=sys.stderr)
     return rules
 
 

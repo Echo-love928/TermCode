@@ -34,7 +34,7 @@ async def test_tui_dispatch_help_lists_all_builtins(sse_server):
         assert [row.split()[0] for row in rows] == [
             "/" + c.name for c in app.cmd_registry.visible()
         ]
-        assert len(rows) == 12
+        assert len(rows) == 13
         assert app.conv.length() == 0 and not sse_server.requests
         assert not await app.dispatch_slash("ordinary text")
 
@@ -216,7 +216,7 @@ async def test_completion_keys_scroll_escape_backspace_tab_and_enter(sse_server)
     async with app.run_test(size=(90, 36)) as pilot:
         editor = app.query_one("#input", ChatInput)
         await pilot.press("/")
-        assert app.completion.active and len(app.completion.items) == 12
+        assert app.completion.active and len(app.completion.items) == 13
         widget = app.query_one("#completion", Static)
         assert 0 < widget.region.height <= 8
         assert editor.region.bottom < widget.region.bottom

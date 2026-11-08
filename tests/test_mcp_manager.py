@@ -317,8 +317,8 @@ def test_mcp_permission_exact_wildcard_persist_and_unknown_safety(tmp_path):
     assert engine.check(Mode.DEFAULT, tool_call)[0] == Decision.ASK
     assert engine.check(Mode.DEFAULT, tool_call, True)[0] == Decision.ALLOW
     assert engine.check(Mode.BYPASS, tool_call)[0] == Decision.ALLOW
-    rule, valid = parse_rule("mcp__my-server__*")
-    assert valid
+    rule, error = parse_rule("mcp__my-server__*")
+    assert rule is not None and error is None
     engine.project.allow.append(rule)
     assert engine.check(Mode.DEFAULT, tool_call)[0] == Decision.ALLOW
     engine.project.deny.append(rule)

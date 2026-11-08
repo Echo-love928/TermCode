@@ -33,7 +33,7 @@ def main() -> None:
 
 
 async def _run(config: ProviderConfig) -> None:
-    from termcode import __version__
+    from termcode import __version__, hook
     from termcode.agent import SessionRuntime
     from termcode.compact import new_session_context
     from termcode.config import effective_context_window
@@ -79,6 +79,7 @@ async def _run(config: ProviderConfig) -> None:
         engine.mcp_tools = frozenset(tool.name() for tool in manager.tools())
         if err is not None:
             print("权限引擎降级：无法解析项目根目录", file=sys.stderr)
+        hook_engine = hook.load(root)
         app = TermCodeApp(
             config.providers,
             registry=registry,
@@ -90,6 +91,7 @@ async def _run(config: ProviderConfig) -> None:
             memory_text=memory_text,
             cancel_background=manager.cancel_pending,
             skill_loader=skill_loader,
+            hook_engine=hook_engine if hook_engine.rules else None,
         )
         try:
             await app.run_async(inline=True)
@@ -99,7 +101,11 @@ async def _run(config: ProviderConfig) -> None:
             print("TermCode: 终端界面运行失败，请检查终端环境。", file=sys.stderr)
             raise SystemExit(1) from None
         finally:
-            app.print_transcript()
+            try:
+                await app.end_hook_session()
+            finally:
+                await hook_engine.aclose()
+                app.print_transcript()
     finally:
         await mem_mgr.close()
         if writer:

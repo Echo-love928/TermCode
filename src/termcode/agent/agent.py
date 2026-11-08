@@ -23,6 +23,10 @@ from termcode.compact import (
 from termcode.compact.const import MANUAL_SAFETY_MARGIN
 from termcode.compact.token import estimate_tokens, usage_anchor
 from termcode.conversation import Conversation
+from termcode.hook import DispatchResult
+from termcode.hook import Engine as HookEngine
+from termcode.hook import Event as HookEvent
+from termcode.hook.rule import Payload
 from termcode.llm import (
     PromptTooLongError,
     Provider,
@@ -142,12 +146,15 @@ class Agent:
         memory_manager: Manager | None = None,
         instruction_text: str = "",
         memory_text: str = "",
+        hook_engine: HookEngine | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
         self._version = version
         self.engine = engine if engine is not None else new_engine(str(Path.cwd()))[0]
         self.runtime = runtime if runtime is not None else SessionRuntime()
+        if hook_engine is not None:
+            self.runtime.hook_engine = hook_engine
         self._mem_mgr = memory_manager
         self._instruction_text = instruction_text
         self._memory_text = memory_text
@@ -216,14 +223,68 @@ class Agent:
         self.runtime.usage_anchor = 0
         self.runtime.anchor_msg_len = 0
 
+    async def _dispatch_hook(
+        self,
+        event: HookEvent,
+        mode: Mode,
+        payload: Payload,
+        cancel: asyncio.Event | None = None,
+    ) -> DispatchResult:
+        if self.runtime.hook_engine is None:
+            return DispatchResult()
+        operation = self.runtime.dispatch_hook(event, self.engine.root, mode, payload)
+        return (
+            await _until_cancel(operation, cancel)
+            if cancel is not None
+            else await operation
+        )
+
+    async def _manage_with_hooks(self, in_: ManageInput, mode: Mode) -> ManageOutput:
+        payload = {"trigger": in_.trigger.value}
+        await self._dispatch_hook(HookEvent.PRE_COMPACT, mode, payload)
+        out = await manage_context(in_)
+        if out.summarized or in_.trigger is TriggerKind.MANUAL:
+            # 历史提交和锚点重置之间不让出执行权，取消也不会留下旧锚点。
+            self._reset_anchor()
+        await self._dispatch_hook(
+            HookEvent.POST_COMPACT,
+            mode,
+            {
+                **payload,
+                "before_tokens": out.before_tokens,
+                "after_tokens": out.after_tokens,
+            },
+        )
+        return out
+
+    async def _notify_stream_error(
+        self, exc: Exception, mode: Mode, cancel: asyncio.Event
+    ) -> None:
+        status = getattr(exc, "status_code", None)
+        # 供应商的错误正文可能包含请求内容或密钥，通知只发送摘要。
+        if isinstance(status, int):
+            detail = f"{type(exc).__name__} (HTTP {status})"
+        elif isinstance(exc, (RuntimeError, PromptTooLongError)):
+            detail = str(exc)
+        else:
+            detail = type(exc).__name__
+        await self._dispatch_hook(
+            HookEvent.NOTIFICATION,
+            mode,
+            {"kind": "stream_error", "detail": detail},
+            cancel,
+        )
+
     async def run_force_compact(
-        self, conv: Conversation, tool_defs: list[ToolDefinition]
+        self,
+        conv: Conversation,
+        tool_defs: list[ToolDefinition],
+        mode: Mode = Mode.DEFAULT,
     ) -> tuple[int, int]:
         async with self._run_lock:
-            out = await manage_context(
-                self._manage_input(conv, tool_defs, TriggerKind.MANUAL)
+            out = await self._manage_with_hooks(
+                self._manage_input(conv, tool_defs, TriggerKind.MANUAL), mode
             )
-            self._reset_anchor()
             return out.before_tokens, out.after_tokens
 
     async def _manage(
@@ -231,6 +292,7 @@ class Agent:
         conv: Conversation,
         definitions: list[ToolDefinition],
         trigger: TriggerKind,
+        mode: Mode,
         cancel: asyncio.Event,
         push: Push,
     ) -> None:
@@ -254,15 +316,8 @@ class Agent:
         else:
             in_.on_start = on_start
 
-        async def manage() -> ManageOutput:
-            out = await manage_context(in_)
-            if out.summarized:
-                # 历史提交和锚点重置之间不让出执行权，取消也不会留下旧锚点。
-                self._reset_anchor()
-            return out
-
         try:
-            out = await _until_cancel(manage(), cancel)
+            out = await _until_cancel(self._manage_with_hooks(in_, mode), cancel)
         except Exception as exc:
             if isinstance(exc, _TurnCancelled):
                 raise
@@ -317,6 +372,12 @@ class Agent:
         self, conv: Conversation, mode: Mode, cancel: asyncio.Event, push: Push
     ) -> None:
         unknown_run = 0
+        err: Exception | None = None
+
+        async def finish(iteration: int) -> None:
+            await self._dispatch_hook(HookEvent.STOP, mode, {"iter": iteration}, cancel)
+            push(Event(done=True))
+
         try:
             if cancel.is_set():
                 raise _TurnCancelled
@@ -328,6 +389,16 @@ class Agent:
             )
             memory = self._mem_mgr.load_index() if self._mem_mgr else self._memory_text
             stable = prompt.build_system_prompt(self._instruction_text, memory)
+            user_prompt = ""
+            if self.runtime.hook_engine is not None:
+                user_prompt = next(
+                    (
+                        msg.content
+                        for msg in reversed(conv.messages())
+                        if msg.role == "user"
+                    ),
+                    "",
+                )
             for iteration in range(1, MAX_ITERATIONS + 1):
                 if cancel.is_set():
                     raise _TurnCancelled
@@ -348,20 +419,29 @@ class Agent:
                     if mode == Mode.PLAN
                     else ""
                 )
-                await self._manage(conv, definitions, TriggerKind.AUTO, cancel, push)
+                await self._manage(
+                    conv, definitions, TriggerKind.AUTO, mode, cancel, push
+                )
                 text, calls, usage, err = await self._stream_once(
-                    conv, definitions, system, reminder, cancel, push
+                    conv, definitions, system, reminder, mode, user_prompt, cancel, push
                 )
                 if isinstance(err, PromptTooLongError):
                     await self._manage(
-                        conv, definitions, TriggerKind.EMERGENCY, cancel, push
+                        conv, definitions, TriggerKind.EMERGENCY, mode, cancel, push
                     )
                     estimated = estimate_tokens(0, conv.messages(), 0)
                     if estimated >= self.runtime.context_window - MANUAL_SAFETY_MARGIN:
                         raise err
                     # 同一迭代只重试一次，不回到自动压缩入口。
                     text, calls, usage, err = await self._stream_once(
-                        conv, definitions, system, reminder, cancel, push
+                        conv,
+                        definitions,
+                        system,
+                        reminder,
+                        mode,
+                        user_prompt,
+                        cancel,
+                        push,
                     )
                 if err is not None:
                     raise err
@@ -400,7 +480,7 @@ class Agent:
                     if usage is not None:
                         self.runtime.usage_anchor = usage_anchor(usage)
                         self.runtime.anchor_msg_len = conv.length()
-                    push(Event(done=True))
+                    await finish(iteration)
                     return
                 conv.add_assistant_with_tool_calls(text, calls)
                 if usage is not None:
@@ -424,11 +504,11 @@ class Agent:
                 if unknown_run >= MAX_UNKNOWN_RUN:
                     ensure_assistant_tail(conv, NOTICE_UNKNOWN_TOOLS)
                     push(Event(notice=NOTICE_UNKNOWN_TOOLS))
-                    push(Event(done=True))
+                    await finish(iteration)
                     return
             ensure_assistant_tail(conv, NOTICE_MAX_ITER)
             push(Event(notice=NOTICE_MAX_ITER))
-            push(Event(done=True))
+            await finish(MAX_ITERATIONS)
         except _TurnCancelled:
             ensure_assistant_tail(conv, NOTICE_CANCELLED)
         except asyncio.CancelledError:
@@ -436,6 +516,11 @@ class Agent:
             raise
         except Exception as exc:
             ensure_assistant_tail(conv, NOTICE_STREAM_ERR)
+            try:
+                if exc is not err:
+                    await self._notify_stream_error(exc, mode, cancel)
+            except _TurnCancelled:
+                return
             push(Event(err=exc, notice=NOTICE_STREAM_ERR))
 
     async def _stream_once(
@@ -444,12 +529,18 @@ class Agent:
         definitions: list[ToolDefinition],
         system: System,
         reminder: str,
+        mode: Mode,
+        user_prompt: str,
         cancel: asyncio.Event,
         push: Push,
     ) -> tuple[str, list[ToolCall], LLMUsage | None, Exception | None]:
         text = ""
         calls: list[ToolCall] = []
         usage = None
+        await self._dispatch_hook(
+            HookEvent.PRE_USER_MESSAGE, mode, {"prompt": user_prompt}, cancel
+        )
+        reminder = "\n\n".join(filter(None, (reminder, *self.runtime.take_reminders())))
         async with aclosing(
             self._provider.stream(
                 Request(conv.messages(), definitions, system, reminder)
@@ -461,6 +552,7 @@ class Agent:
                 except StopAsyncIteration:
                     raise RuntimeError("响应流未正常结束，请重新发送问题") from None
                 if event.err is not None:
+                    await self._notify_stream_error(event.err, mode, cancel)
                     return text, calls, usage, event.err
                 if event.text:
                     text += event.text
@@ -503,6 +595,11 @@ class Agent:
         async def run_one(index: int, decision: Decision, reason: str) -> None:
             call = calls[index]
             if decision == Decision.ASK:
+                await self._dispatch_hook(
+                    HookEvent.NOTIFICATION,
+                    mode,
+                    {"kind": "approval", "detail": call.name},
+                )
                 outcome = await self.request_approval(call, reason, cancel, push)
                 if outcome == Outcome.DENY_ONCE:
                     results[index] = ToolResult(call.id, "用户拒绝本次工具调用", True)
@@ -542,30 +639,71 @@ class Agent:
                 ):
                     j += 1
             allowed: list[tuple[int, Decision, str]] = []
-            for k in range(i, j):
-                call = calls[k]
-                decision, reason = check_one(k)
-                push(Event(tool=ToolEvent(call.name, args_preview(call))))
-                if decision == Decision.DENY:
-                    results[k] = ToolResult(call.id, reason, True)
-                else:
-                    allowed.append((k, decision, reason))
+            started = i
+            ended = i
+            payloads: dict[int, Payload] = {}
+
+            def end_tool(index: int) -> None:
+                call, result = calls[index], results[index]
+                push(
+                    Event(
+                        tool=ToolEvent(
+                            call.name,
+                            args_preview(call),
+                            Phase.END,
+                            result.content,
+                            result.is_error,
+                        )
+                    )
+                )
+
             try:
+                for k in range(i, j):
+                    call = calls[k]
+                    if self.runtime.hook_engine is not None:
+                        try:
+                            args = json.loads(call.input)
+                        except (ValueError, RecursionError):
+                            args = {}
+                        payloads[k] = {
+                            "tool_name": call.name,
+                            "tool_input": args if isinstance(args, dict) else {},
+                        }
+                        hook = await self._dispatch_hook(
+                            HookEvent.PRE_TOOL_USE, mode, payloads[k], cancel
+                        )
+                        if hook.blocked:
+                            decision, reason = Decision.DENY, hook.block_message()
+                        else:
+                            decision, reason = check_one(k)
+                    else:
+                        decision, reason = check_one(k)
+                    push(Event(tool=ToolEvent(call.name, args_preview(call))))
+                    started = k + 1
+                    if decision == Decision.DENY:
+                        results[k] = ToolResult(call.id, reason, True)
+                    else:
+                        allowed.append((k, decision, reason))
                 await _until_cancel(
                     asyncio.gather(*(run_one(*entry) for entry in allowed)), cancel
                 )
-            finally:
-                # 完成事件按调用顺序发出，避免并发完成时交错滚动记录。
-                for call, result in zip(calls[i:j], results[i:j], strict=True):
-                    push(
-                        Event(
-                            tool=ToolEvent(
-                                call.name,
-                                args_preview(call),
-                                Phase.END,
-                                result.content,
-                                result.is_error,
-                            )
+                # 结果 Hook 和结束事件都按调用顺序发出。
+                for k in range(i, j):
+                    if k in payloads:
+                        result = results[k]
+                        await self._dispatch_hook(
+                            HookEvent.POST_TOOL_USE,
+                            mode,
+                            {
+                                **payloads[k],
+                                "tool_result": result.content[:1600],
+                                "is_error": result.is_error,
+                            },
+                            cancel,
                         )
-                    )
+                    end_tool(k)
+                    ended = k + 1
+            finally:
+                for k in range(ended, started):
+                    end_tool(k)
             i = j

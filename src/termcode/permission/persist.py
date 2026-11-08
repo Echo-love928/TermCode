@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,18 +21,18 @@ if TYPE_CHECKING:
 def rule_for(engine: Engine, call: ToolCall) -> tuple[Rule, str, bool]:
     if call.name in engine.mcp_tools:
         # MCP 权限按工具全名保存，不把远端参数误当本地路径或命令。
-        rule = Rule(call.name, allow=True)
-        _, valid = parse_rule(str(rule))
-        return rule, str(rule), valid
-    target, is_file, ok = extract_target(call)
-    if not ok or (is_file and not sandbox_ok(engine, target)):
+        text = call.name
+    else:
+        target, is_file, ok = extract_target(call)
+        if not ok or (is_file and not sandbox_ok(engine, target)):
+            return Rule(""), "", False
+        if is_file:
+            target = engine.relative_target(target)
+        text = f"{friendly_name(call.name)}({escape_glob(target)})"
+    rule, _ = parse_rule(text)
+    if rule is None:
         return Rule(""), "", False
-    if is_file:
-        target = engine.relative_target(target)
-    rule = Rule(friendly_name(call.name), escape_glob(target), True)
-    # 无法无损表示的括号宁可报告持久化失败，也不写出不同含义的规则。
-    _, valid = parse_rule(str(rule))
-    return rule, str(rule), valid
+    return replace(rule, allow=True), text, True
 
 
 def persist_local_allow(engine: Engine, call: ToolCall) -> None:

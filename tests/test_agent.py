@@ -15,11 +15,16 @@ from termcode.agent import (
     NOTICE_STREAM_ERR,
     NOTICE_UNKNOWN_TOOLS,
     Agent,
+    ApprovalRequest,
     Phase,
 )
 from termcode.conversation import Conversation
-from termcode.llm import StreamEvent, ToolCall, Usage
-from termcode.permission import Mode
+from termcode.hook import Engine as HookEngine
+from termcode.hook import Event as HookEvent
+from termcode.hook.executor import ExecutionResult
+from termcode.hook.rule import PromptAction, Rule
+from termcode.llm import PromptTooLongError, StreamEvent, ToolCall, Usage
+from termcode.permission import Decision, Mode, Outcome
 from termcode.prompt import Environment, build_system_prompt, plan_reminder
 from termcode.tool import Registry, Result, new_default_registry
 
@@ -78,6 +83,126 @@ def assert_paired(conv):
                 c.id for c in message.tool_calls
             ]
     assert conv.last_role() == "assistant"
+
+
+def record_hooks(monkeypatch, run):
+    records = []
+    events = list(HookEvent)
+    engine = HookEngine([Rule(e.value, e, PromptAction("")) for e in events], [])
+
+    async def execute(rule, payload, *, blocking):
+        records.append((rule.event, payload))
+        return run(rule.event, payload)
+
+    monkeypatch.setattr(engine._executor, "run", execute)
+    return engine, records
+
+
+async def test_hook_pre_tool_runs_before_permission_and_post_receives_error(
+    tmp_path, monkeypatch
+):
+    def run(event, payload):
+        if event is HookEvent.PRE_TOOL_USE and payload["tool_name"] == "write_file":
+            return ExecutionResult(blocked=True, reason="blocked by policy")
+        return ExecutionResult()
+
+    hook_engine, records = record_hooks(monkeypatch, run)
+    provider = FakeProvider(
+        [
+            response(call("1", "write_file", path="out.txt", content="text")),
+            response(call("2", "bash", command="echo allowed")),
+            response(call("3", "read_file", path="out.txt")),
+            response(text="完成"),
+        ]
+    )
+    agent = Agent(provider, new_default_registry(), hook_engine=hook_engine)
+    original = agent.engine.check
+
+    def check(mode, tool_call, read_only):
+        assert tool_call.name != "write_file"
+        if tool_call.name == "read_file":
+            return Decision.DENY, "permission denied"
+        return original(mode, tool_call, read_only)
+
+    monkeypatch.setattr(agent.engine, "check", check)
+    conv = conversation()
+    tools = []
+    async for event in agent.run(conv):
+        if isinstance(event, ApprovalRequest):
+            assert records[-1][1]["kind"] == "approval"
+            assert records[-1][1]["detail"] == "bash"
+            event.respond.set_result(Outcome.ALLOW_ONCE)
+        elif event.tool:
+            tools.append(event.tool)
+            if event.tool.phase is Phase.END:
+                assert records[-1][0] is HookEvent.POST_TOOL_USE
+        elif event.done:
+            assert records[-1][0] is HookEvent.STOP and records[-1][1]["iter"] == 4
+    assert [tool.phase for tool in tools] == [Phase.START, Phase.END] * 3
+    assert not (tmp_path / "out.txt").exists()
+    assert tools[1].result == "[hook PreToolUse] blocked by policy"
+    assert tools[1].is_error
+    model_result = provider.requests[1].messages[-1].tool_results[0]
+    assert model_result.content == tools[1].result and model_result.is_error
+    posts = [payload for event, payload in records if event is HookEvent.POST_TOOL_USE]
+    assert [payload["is_error"] for payload in posts] == [True, False, True]
+    assert posts[0]["tool_input"] == {"path": "out.txt", "content": "text"}
+    assert posts[2]["tool_result"] == "permission denied"
+    assert posts[0]["session_id"] == agent.runtime.session.session_id
+    assert posts[0]["cwd"] == str(tmp_path) and posts[0]["mode"] == "default"
+
+
+async def test_hook_reminder_combines_with_plan_without_persisting(monkeypatch):
+    def run(event, payload):
+        if event is HookEvent.PRE_USER_MESSAGE and payload["prompt"] == "执行任务":
+            return ExecutionResult(prompt="只用于请求")
+        return ExecutionResult()
+
+    hook_engine, records = record_hooks(monkeypatch, run)
+    provider = FakeProvider([response(text="完成")])
+    agent = Agent(provider, Registry(), hook_engine=hook_engine)
+    conv = conversation()
+    events = [event async for event in agent.run(conv, Mode.PLAN)]
+    assert events[-1].done
+    assert provider.requests[0].reminder == plan_reminder(True) + "\n\n只用于请求"
+    assert all("只用于请求" not in msg.content for msg in conv.messages())
+    assert not agent.runtime.take_reminders()
+    assert [event for event, _ in records] == [
+        HookEvent.PRE_COMPACT,
+        HookEvent.POST_COMPACT,
+        HookEvent.PRE_USER_MESSAGE,
+        HookEvent.STOP,
+    ]
+
+
+async def test_hook_compact_paths_and_stream_error_notification(monkeypatch):
+    from termcode.compact import ManageOutput
+
+    async def manage(in_):
+        return ManageOutput(100, 50)
+
+    monkeypatch.setattr("termcode.agent.agent.manage_context", manage)
+    hook_engine, records = record_hooks(monkeypatch, lambda *_: ExecutionResult())
+    provider = FakeProvider(
+        [
+            [StreamEvent(err=PromptTooLongError("输入太长"))],
+            [StreamEvent(err=RuntimeError("流测试失败"))],
+        ]
+    )
+    agent = Agent(provider, Registry(), hook_engine=hook_engine)
+    conv = conversation()
+    assert await agent.run_force_compact(conv, [], Mode.PLAN) == (100, 50)
+    events = [event async for event in agent.run(conv)]
+    assert str(events[-1].err) == "流测试失败"
+    assert not any(event.done for event in events)
+    assert HookEvent.STOP not in [event for event, _ in records]
+    posts = [payload for event, payload in records if event is HookEvent.POST_COMPACT]
+    assert [p["trigger"] for p in posts] == ["manual", "auto", "emergency"]
+    assert [p["mode"] for p in posts] == ["plan", "default", "default"]
+    assert [(p["before_tokens"], p["after_tokens"]) for p in posts] == [(100, 50)] * 3
+    notifications = [p for e, p in records if e is HookEvent.NOTIFICATION]
+    assert [p["kind"] for p in notifications] == ["stream_error"] * 2
+    assert [p["detail"] for p in notifications] == ["输入太长", "流测试失败"]
 
 
 async def test_agent_multiround_read_write_history_and_final(tmp_path):

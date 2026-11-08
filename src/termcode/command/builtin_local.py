@@ -36,6 +36,23 @@ async def handle_memory(ui: UI) -> None:
     ui.println("\n".join(ui.memory_files()) or "无已加载的记忆文件")
 
 
+async def handle_hooks(ui: UI) -> None:
+    groups: dict[str, list[str]] = {}
+    for rule in ui.hook_rules():
+        flags = ("  [once]" if rule.only_once else "") + (
+            "  [async]" if rule.asyncio_mode else ""
+        )
+        groups.setdefault(rule.event.value, []).append(
+            f"  {rule.name}  {rule.event}  {rule.action.type}{flags}"
+        )
+    if not groups:
+        ui.println("No hooks loaded.")
+        return
+    lines = [line for group in groups.values() for line in group]
+    lines.append("Loaded from: " + ", ".join(ui.hook_sources()))
+    ui.println("\n".join(lines))
+
+
 async def handle_permission(ui: UI) -> None:
     ui.println(str(ui.mode()))
 

@@ -1,6 +1,7 @@
 """协议无关的权限引擎及其对外接口。"""
 
 from termcode.permission.engine import Engine, new_engine
+from termcode.permission.matcher import Matcher
 from termcode.permission.persist import persist_local_allow
 from termcode.permission.types import (
     ApprovalError,
@@ -16,6 +17,7 @@ __all__ = [
     "Category",
     "Decision",
     "Engine",
+    "Matcher",
     "Mode",
     "Outcome",
     "new_engine",

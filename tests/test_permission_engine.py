@@ -12,6 +12,7 @@ from termcode.llm import ToolCall
 from termcode.permission import Category, Decision, Mode, new_engine, parse_mode
 from termcode.permission.blacklist import hits_blacklist
 from termcode.permission.engine import mode_fallback
+from termcode.permission.matcher import GlobMatcher
 from termcode.permission.rule import Rule, RuleSet, match_pattern, parse_rule
 from termcode.permission.settings import (
     SettingsError,
@@ -71,7 +72,7 @@ def test_modes_and_complete_matrix(mode):
     ],
 )
 def test_blacklist_all_modes_and_allow_cannot_override(engine, command):
-    engine.local.allow.append(Rule("Bash", "", True))
+    engine.local.allow.append(Rule("Bash", allow=True))
     for mode in Mode:
         decision, reason = engine.check(mode, call("bash", command=command))
         assert decision == Decision.DENY
@@ -108,7 +109,7 @@ def test_sandbox_all_file_tools_and_relative_rules(engine, name):
         "glob": "Glob",
         "grep": "Grep",
     }[name]
-    engine.user.deny.append(Rule(friendly, "src/**"))
+    engine.user.deny.append(Rule(friendly, GlobMatcher("src/**", is_command=False)))
     assert (
         engine.check(
             Mode.BYPASS, call(name, path=str(Path(engine.root) / "src/a/b")), True
@@ -168,10 +169,11 @@ def test_path_patterns(pattern, target, expected):
 
 
 def test_rule_parsing_and_same_set_priority():
-    assert parse_rule("Bash(git *)")[0] == Rule("Bash", "git *")
-    assert parse_rule("Read") == (Rule("Read"), True)
+    assert parse_rule("Bash(git *)")[0] == Rule("Bash", GlobMatcher("git *", True))
+    assert parse_rule("Read") == (Rule("Read"), None)
     for text in ["", "Bash(", "Bash(git))", "(git)"]:
-        assert not parse_rule(text)[1]
+        rule, error = parse_rule(text)
+        assert rule is None and error
     rules = RuleSet(allow=[Rule("Bash")], ask=[Rule("Bash")], deny=[Rule("Bash")])
     assert rules.match("Bash", "git status") == (Decision.DENY, True)
     rules.deny.clear()
@@ -182,12 +184,14 @@ def test_rule_parsing_and_same_set_priority():
     "order", list(itertools.permutations(("user", "project", "local")))
 )
 def test_cross_layer_effect_priority(engine, order):
-    getattr(engine, order[0]).allow.append(Rule("Bash", "git *", True))
-    getattr(engine, order[1]).ask.append(Rule("Bash", "git *"))
+    getattr(engine, order[0]).allow.append(
+        Rule("Bash", GlobMatcher("git *", True), True)
+    )
+    getattr(engine, order[1]).ask.append(Rule("Bash", GlobMatcher("git *", True)))
     assert (
         engine.check(Mode.BYPASS, call("bash", command="git status"))[0] == Decision.ASK
     )
-    getattr(engine, order[2]).deny.append(Rule("Bash", "git push"))
+    getattr(engine, order[2]).deny.append(Rule("Bash", GlobMatcher("git push", True)))
     assert (
         engine.check(Mode.BYPASS, call("bash", command="git push"))[0] == Decision.DENY
     )
@@ -198,12 +202,12 @@ def test_short_circuit_and_layer_skipping(engine, monkeypatch):
         pytest.fail("短路后仍访问后续层")
 
     monkeypatch.setattr("termcode.permission.engine.mode_fallback", fail)
-    engine.local.allow.append(Rule("Bash", "git *", True))
+    engine.local.allow.append(Rule("Bash", GlobMatcher("git *", True), True))
     assert (
         engine.check(Mode.DEFAULT, call("bash", command="git status"))[0]
         == Decision.ALLOW
     )
-    engine.user.deny.append(Rule("Bash", "git push"))
+    engine.user.deny.append(Rule("Bash", GlobMatcher("git push", True)))
     assert (
         engine.check(Mode.BYPASS, call("bash", command="git push"))[0] == Decision.DENY
     )
@@ -219,7 +223,7 @@ def test_short_circuit_and_layer_skipping(engine, monkeypatch):
 
 @pytest.mark.parametrize("mode", list(Mode))
 def test_safe_defaults_cannot_be_overridden(engine, mode):
-    engine.local.allow.extend([Rule("Bash", "", True), Rule("missing", "", True)])
+    engine.local.allow.extend([Rule("Bash", allow=True), Rule("missing", allow=True)])
     for tool in [
         ToolCall("id", "bash", "invalid"),
         call("bash"),

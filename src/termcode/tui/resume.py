@@ -18,6 +18,7 @@ from termcode.compact import open_session_context
 from termcode.compact.const import AUTO_SAFETY_MARGIN, SUMMARY_RESERVE
 from termcode.compact.token import estimate_tokens
 from termcode.conversation import Conversation
+from termcode.hook import Event as HookEvent
 from termcode.session import (
     SessionInfo,
     Writer,
@@ -152,7 +153,9 @@ async def do_resume_session(app: TermCodeApp, info: SessionInfo) -> None:
             threshold = runtime.context_window - SUMMARY_RESERVE - AUTO_SAFETY_MARGIN
             compacted = False
             if conv.length() and estimate_tokens(0, msgs, 0) > threshold:
-                await agent.run_force_compact(conv, app._tool_registry.definitions())
+                await agent.run_force_compact(
+                    conv, app._tool_registry.definitions(), app.mode
+                )
                 compacted = True
             writer = Writer.open_existing(context.session_dir, provider.model)
             if compacted:
@@ -167,6 +170,7 @@ async def do_resume_session(app: TermCodeApp, info: SessionInfo) -> None:
                     "如需最新信息请重新读取相关文件。"
                 )
             old_writer = app.writer
+            await app.end_hook_session()
             app.conv, app.writer, app.runtime = conv, writer, runtime
             app._bind_agent(agent)
             writer = None
@@ -174,6 +178,7 @@ async def do_resume_session(app: TermCodeApp, info: SessionInfo) -> None:
             app._refresh_statusbar()
             if old_writer:
                 old_writer.close()
+            await app._open_hook_session(HookEvent.SESSION_RESUME)
             for msg in conv.messages():
                 if msg.content:
                     app._write(Text(app._clean(f"{msg.role}: {msg.content}")))
