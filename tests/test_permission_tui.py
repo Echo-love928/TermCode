@@ -8,14 +8,38 @@ from test_tool_protocols import call
 from test_tui import local_config, transcript, transcript_status, wait_for
 from textual.widgets import Static
 
+from termcode.agent import ApprovalRequest
 from termcode.permission import Mode, Outcome, new_engine
-from termcode.tui.app import SessionState, TermCodeApp
+from termcode.tui.app import ChatInput, SessionState, TermCodeApp
 
 
 @pytest.fixture(autouse=True)
 def isolated_root(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+
+
+async def test_background_approval_keeps_draft_and_receives_key(sse_server):
+    app = TermCodeApp([local_config(sse_server)])
+    async with app.run_test() as pilot:
+        editor = app.query_one(ChatInput)
+        editor.load_text("保留草稿")
+        request = ApprovalRequest(
+            "bash",
+            "echo hello",
+            "来自子 Agent",
+            asyncio.get_running_loop().create_future(),
+            background=True,
+        )
+        app.state = SessionState.STREAMING
+        app._queue_task_approval(request)
+        app._return_to_idle()
+        await pilot.pause()
+        assert app.state == SessionState.APPROVING and editor.read_only
+        await pilot.press("1")
+        await wait_for(lambda: app.state == SessionState.IDLE)
+        assert request.respond.result() == Outcome.ALLOW_ONCE
+        assert editor.text == "保留草稿" and editor.has_focus and not editor.read_only
 
 
 async def test_cycle_status_and_mode_persists_across_turns(sse_server):

@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 async def consume_stream(
     app: TermCodeApp, *, fork: tuple[SkillDef, str] | None = None
 ) -> None:
+    from termcode.tui.app import SessionState
+
     if app.provider is None:
         app._finish_with_error(RuntimeError("尚未选择供应商"))
         return
@@ -34,17 +36,11 @@ async def consume_stream(
             events = app.skill_executor.stream_fork(
                 *fork, app.conv, app.mode, app.turn_cancel
             )
-        fork_output: list[str] = []
         async with aclosing(events) as stream:
             async for event in stream:
                 if isinstance(event, ApprovalRequest):
-                    from termcode.tui.app import SessionState
-
-                    app.pending = event
-                    app.approve_cursor = 0
-                    app.state = SessionState.APPROVING
-                    app.query_one("#input").blur()
-                    app._refresh_streaming_view()
+                    if not event.background and not event.respond.done():
+                        app._show_approval(event)
                     continue
                 if event.compact is not None:
                     # 同一 UI 事件循环直接显示，摘要网络请求不会阻塞提示渲染。
@@ -57,6 +53,9 @@ async def consume_stream(
                     continue
                 if event.err is not None:
                     raise event.err
+                if app.pending is not None and app.pending.respond.done():
+                    app.pending = None
+                    app.state = SessionState.STREAMING
                 if event.tool is not None:
                     tool = event.tool
                     if tool.phase == Phase.START:
@@ -91,8 +90,6 @@ async def consume_stream(
                         except OSError:
                             logging.getLogger(__name__).warning("会话用量存档失败")
                 if event.notice:
-                    if fork is not None:
-                        fork_output.append(f"\n{event.notice}")
                     if app.cur_reply:
                         app._write(
                             render_markdown(
@@ -106,11 +103,9 @@ async def consume_stream(
                     app.iter = event.iter
                 if event.text:
                     app.cur_reply += event.text
-                    if fork is not None:
-                        fork_output.append(event.text)
                 if event.done:
                     if fork is not None:
-                        app.conv.add_assistant("".join(fork_output).strip())
+                        app.conv.add_assistant(event.final_text or "")
                     if app.cur_reply:
                         app._finish_with_assistant(app.cur_reply)
                     else:
@@ -156,6 +151,9 @@ def update_approving(app: TermCodeApp, key: str) -> None:
     if key not in shortcuts and key not in {"enter", "space"}:
         return
     outcome = outcome_for_index(shortcuts.get(key, app.approve_cursor))
+    if request.background:
+        request.respond.set_result(outcome)
+        return
     app.pending = None
     app.state = SessionState.STREAMING
     request.respond.set_result(outcome)

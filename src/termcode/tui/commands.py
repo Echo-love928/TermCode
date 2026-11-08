@@ -168,6 +168,7 @@ class CommandUI:
         app.state = SessionState.RESUMING
         try:
             await app.end_hook_session()
+            await app._clear_tasks()
             if old_writer:
                 old_writer.close()
             app.runtime.reset_for_new_session(context)

@@ -15,6 +15,29 @@ class PromptTooLongError(Exception):
     """供应商上报输入超出上下文窗口时的统一异常。"""
 
 
+def error_message(error: Exception) -> str:
+    """供应商异常正文可能含密钥和请求体，只公开可安全展示的摘要。"""
+    status = getattr(error, "status_code", None)
+    name = type(error).__name__
+    if status in {401, 403}:
+        return f"认证失败（HTTP {status}），请检查密钥和访问权限。"
+    if status == 429:
+        return "请求受限（HTTP 429），请稍后手动重试。"
+    if status == 404:
+        return "模型或接口不存在（HTTP 404），请检查 model 和 base_url。"
+    if status == 400:
+        return "请求被拒绝（HTTP 400），请检查模型是否支持当前协议和 thinking 设置。"
+    if status is not None:
+        return f"服务商返回错误（HTTP {status}），请检查配置或稍后重试。"
+    if "Timeout" in name:
+        return "请求超时，请检查网络或稍后重试。"
+    if "Connection" in name:
+        return "网络连接失败，请检查网络和 base_url。"
+    if isinstance(error, RuntimeError):
+        return str(error)
+    return "请求失败，请检查网络、服务商配置或响应格式。"
+
+
 @dataclass(frozen=True)
 class ToolCall:
     """流式拼接完成的工具调用，保留原始 JSON 参数。"""

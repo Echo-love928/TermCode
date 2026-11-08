@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 
 from termcode.llm import ToolCall
 from termcode.permission.blacklist import hits_blacklist
@@ -14,6 +15,7 @@ from termcode.permission.sandbox import (
 from termcode.permission.settings import (
     FRIENDLY_NAMES,
     SKILL_TARGETS,
+    TASK_TARGETS,
     Settings,
     SettingsError,
     categorize,
@@ -43,6 +45,9 @@ class Engine:
     _start_mode: Mode = Mode.DEFAULT
     root_valid: bool = True
     mcp_tools: frozenset[str] = field(default_factory=frozenset)
+    _persist_lock: Lock = field(
+        default_factory=Lock, init=False, repr=False, compare=False
+    )
 
     def start_mode(self) -> Mode:
         return self._start_mode
@@ -56,7 +61,12 @@ class Engine:
         )
 
     def check(
-        self, mode: Mode, call: ToolCall, read_only: bool | None = False
+        self,
+        mode: Mode,
+        call: ToolCall,
+        read_only: bool | None = False,
+        *,
+        dont_ask: bool = False,
     ) -> tuple[Decision, str]:
         category = categorize(call.name, read_only)
         friendly = friendly_name(call.name)
@@ -76,7 +86,11 @@ class Engine:
         elif call.name in self.mcp_tools:
             # 仅 CLI 成功注册的 MCP 工具可复用规则和模式兜底。
             pass
-        elif call.name not in FRIENDLY_NAMES and call.name not in SKILL_TARGETS:
+        elif (
+            call.name not in FRIENDLY_NAMES
+            and call.name not in SKILL_TARGETS
+            and call.name not in TASK_TARGETS
+        ):
             return Decision.DENY, "未知工具，安全拒绝：" + call.name
         elif not ok:
             return Decision.DENY, "无法解析命令参数，安全拒绝"
@@ -96,7 +110,7 @@ class Engine:
                         if decision == Decision.ALLOW
                         else f"匹配 {kind} 规则：{rule}"
                     )
-        decision = mode_fallback(mode, category)
+        decision = Decision.ALLOW if dont_ask else mode_fallback(mode, category)
         return decision, (
             ""
             if decision == Decision.ALLOW
@@ -106,7 +120,8 @@ class Engine:
     def persist_local_allow(self, call: ToolCall) -> None:
         from termcode.permission.persist import persist_local_allow
 
-        persist_local_allow(self, call)
+        with self._persist_lock:
+            persist_local_allow(self, call)
 
 
 def new_engine(root: str) -> tuple[Engine, Exception | None]:

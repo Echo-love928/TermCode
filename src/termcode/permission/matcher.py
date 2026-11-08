@@ -15,15 +15,20 @@ class ExactMatcher:
     """匹配完整字面值。"""
 
     value: str
+    ignore_case: bool = False
 
     def match(self, target: str) -> bool:
+        if self.ignore_case:
+            return target.casefold() == self.value.casefold()
         return target == self.value
 
     def __str__(self) -> str:
         return f"={self.value}"
 
 
-def _glob_regex(pattern: str, *, is_file: bool) -> re.Pattern[str]:
+def _glob_regex(
+    pattern: str, *, is_file: bool, ignore_case: bool = False
+) -> re.Pattern[str]:
     parts = []
     index = 0
     while index < len(pattern):
@@ -43,7 +48,8 @@ def _glob_regex(pattern: str, *, is_file: bool) -> re.Pattern[str]:
         else:
             parts.append(re.escape(char))
         index += 1
-    return re.compile("".join(parts), re.DOTALL)
+    flags = re.DOTALL | (re.IGNORECASE if ignore_case else 0)
+    return re.compile("".join(parts), flags)
 
 
 def match_pattern(pattern: str, target: str, *, is_file: bool = False) -> bool:
@@ -59,11 +65,16 @@ class GlobMatcher:
 
     pattern: str
     is_command: bool
+    ignore_case: bool = False
     _compiled: re.Pattern[str] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "_compiled", _glob_regex(self.pattern, is_file=not self.is_command)
+            self,
+            "_compiled",
+            _glob_regex(
+                self.pattern, is_file=not self.is_command, ignore_case=self.ignore_case
+            ),
         )
 
     def match(self, target: str) -> bool:
@@ -78,11 +89,13 @@ class RegexMatcher:
     """搜索目标字符串中的任意匹配片段。"""
 
     src: str
+    ignore_case: bool = False
     compiled: re.Pattern[str] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         try:
-            object.__setattr__(self, "compiled", re.compile(self.src))
+            flags = re.IGNORECASE if self.ignore_case else 0
+            object.__setattr__(self, "compiled", re.compile(self.src, flags))
         except re.error as exc:
             raise ValueError(f"invalid regex: {exc}") from exc
 
@@ -106,14 +119,18 @@ class NotMatcher:
         return f"!{self.inner}"
 
 
-def compile_matcher(pattern: str, *, is_command: bool) -> Matcher:
+def compile_matcher(
+    pattern: str, *, is_command: bool, ignore_case: bool = False
+) -> Matcher:
     if not pattern:
         raise ValueError("empty matcher pattern")
     head, rest = pattern[0], pattern[1:]
     if head == "=":
-        return ExactMatcher(rest)
+        return ExactMatcher(rest, ignore_case)
     if head == "~":
-        return RegexMatcher(rest)
+        return RegexMatcher(rest, ignore_case)
     if head == "!":
-        return NotMatcher(compile_matcher(rest, is_command=is_command))
-    return GlobMatcher(pattern, is_command)
+        return NotMatcher(
+            compile_matcher(rest, is_command=is_command, ignore_case=ignore_case)
+        )
+    return GlobMatcher(pattern, is_command, ignore_case)

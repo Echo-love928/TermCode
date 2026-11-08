@@ -45,7 +45,11 @@ def parse_rule(value: object) -> tuple[Rule | None, str | None]:
             return None, "unbalanced parentheses"
     try:
         matcher = (
-            compile_matcher(pattern, is_command=match[1] == "Bash") if pattern else None
+            compile_matcher(
+                pattern, is_command=match[1] == "Bash", ignore_case=match[1] == "Agent"
+            )
+            if pattern
+            else None
         )
     except (ValueError, RecursionError) as exc:
         return None, str(exc)

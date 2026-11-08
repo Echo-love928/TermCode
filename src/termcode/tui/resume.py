@@ -171,6 +171,7 @@ async def do_resume_session(app: TermCodeApp, info: SessionInfo) -> None:
                 )
             old_writer = app.writer
             await app.end_hook_session()
+            await app._clear_tasks()
             app.conv, app.writer, app.runtime = conv, writer, runtime
             app._bind_agent(agent)
             writer = None

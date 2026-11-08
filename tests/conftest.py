@@ -4,6 +4,7 @@ import importlib
 import json
 import threading
 import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -21,6 +22,7 @@ class SSEServer:
         self.mode = "normal"
         self.delay = 0.005
         self.responses: list[dict] = []
+        self.response_for: Callable[[dict], dict | None] | None = None
         self.gate = threading.Event()
         self.gate.set()
         owner = self
@@ -71,7 +73,10 @@ class SSEServer:
                 self.end_headers()
                 owner.gate.wait(timeout=5)
                 try:
-                    if owner.responses:
+                    response = owner.response_for(body) if owner.response_for else None
+                    if response is not None:
+                        self.scripted(response)
+                    elif owner.responses:
                         self.scripted(owner.responses.pop(0))
                     elif self.path.endswith("/messages"):
                         self.anthropic(body)

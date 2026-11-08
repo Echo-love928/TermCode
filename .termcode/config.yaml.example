@@ -1,5 +1,8 @@
 # 复制为同目录下的 config.yaml，并填写真实密钥。
 # 单个配置直接进入对话；启用多个配置时，启动后通过方向键和 Enter 选择。
+# 设为 false 可禁用 Fork、显式后台启动及前台转后台。
+enable_subagent_background: true
+
 providers:
   - name: claude
     protocol: anthropic

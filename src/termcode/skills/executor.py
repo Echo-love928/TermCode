@@ -6,21 +6,17 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
 from dataclasses import replace
-from pathlib import Path
-from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from termcode.compact import SessionContext
 from termcode.config import ProviderConfig
 from termcode.conversation import Conversation
-from termcode.llm import Message, new_provider
+from termcode.llm import Message
 from termcode.permission import Mode, Outcome
+from termcode.permission.settings import FRIENDLY_NAMES
 from termcode.skills.parser import SkillDef, substitute_arguments
 
 if TYPE_CHECKING:
     from termcode.agent import Agent, ApprovalRequest, Event
-
-SYSTEM_TOOL_NAMES = frozenset({"LoadSkill"})
 
 
 def _build_fork_context(conv: Conversation, context: str) -> list[Message]:
@@ -65,32 +61,81 @@ class SkillExecutor:
         mode: Mode,
         cancel: asyncio.Event | None,
     ) -> AsyncGenerator[Event | ApprovalRequest, None]:
+        from termcode.agent import Event
+
+        queue: asyncio.Queue[Event | ApprovalRequest | None] = asyncio.Queue()
+
+        async def run() -> str:
+            def forward(event: Event | ApprovalRequest) -> None:
+                if not isinstance(event, Event) or not (event.done or event.err):
+                    queue.put_nowait(event)
+
+            try:
+                return await self._run_fork(skill, args, conv, mode, cancel, forward)
+            finally:
+                queue.put_nowait(None)
+
+        worker = asyncio.create_task(run())
+        try:
+            while (event := await queue.get()) is not None:
+                yield event
+            if not worker.cancelled():
+                yield Event(done=True, final_text=await worker)
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    async def _run_fork(
+        self,
+        skill: SkillDef,
+        args: str,
+        conv: Conversation,
+        mode: Mode,
+        cancel: asyncio.Event | None,
+        push: Callable[[Event | ApprovalRequest], None],
+    ) -> str:
+        from termcode.agent.launch import prepare_child
+        from termcode.subagent import Definition
+
         fork_conv = Conversation.from_messages(_build_fork_context(conv, skill.context))
         body = self._render(skill, args)
         if args and "$ARGUMENTS" not in skill.prompt_body:
             body += f"\n\n## User Request\n\n{args}"
         fork_conv.add_user(body)
-        provider = self.agent.provider
-        if skill.model and skill.model != provider.model and self.config:
-            provider = new_provider(replace(self.config, model=skill.model))
+        tools = skill.frontmatter.get(
+            "allowed-tools", skill.frontmatter.get("allowed_tools", [])
+        )
+        if isinstance(tools, str):
+            tools = tools.replace(",", " ").split()
+        if not isinstance(tools, list) or not all(
+            isinstance(tool, str) for tool in tools
+        ):
+            raise ValueError("Skill allowed-tools 必须是工具名列表")
+        aliases = {friendly: internal for internal, friendly in FRIENDLY_NAMES.items()}
+        definition = Definition(
+            f"skill-fork-{skill.name}",
+            skill.description,
+            tools=[aliases.get(tool, tool) for tool in cast(list[str], tools)],
+            disallowed_tools=["LoadSkill"],
+            dont_ask=self.agent.dont_ask,
+        )
+        config = None
+        if skill.model and skill.model != self.agent.provider.model and self.config:
+            config = replace(self.config, model=skill.model)
+        child = await prepare_child(
+            self.agent,
+            definition,
+            "skill",
+            skill.name,
+            provider_config=config,
+            permission_mode=mode,
+        )
         try:
-            session_dir = self.agent.runtime.session.session_dir
-            root = Path(session_dir).parent if session_dir else None
-            try:
-                temporary = TemporaryDirectory(prefix=".fork-", dir=root)
-            except OSError:
-                if root is None:
-                    raise
-                temporary = TemporaryDirectory(prefix=".fork-")
-            with temporary as spill_dir:
-                session = SessionContext("", spill_dir)
-                child = self.agent.fork(provider, SYSTEM_TOOL_NAMES, session)
-                async with aclosing(child.run(fork_conv, mode, cancel)) as events:
-                    async for event in events:
-                        yield event
+            return await child.agent.run_to_completion(
+                fork_conv, "", cancel=cancel, push=push
+            )
         finally:
-            if provider is not self.agent.provider:
-                await provider.aclose()
+            await child.aclose()
 
     async def execute_fork(
         self,
@@ -103,7 +148,6 @@ class SkillExecutor:
     ) -> str:
         from termcode.agent import NOTICE_CANCELLED, ApprovalRequest
 
-        parts = []
         async with aclosing(
             self.stream_fork(skill, args, conv, mode, cancel)
         ) as events:
@@ -114,14 +158,8 @@ class SkillExecutor:
                     else:
                         push(event)
                     continue
-                if event.err is not None:
-                    raise event.err
                 if event.usage is not None and push is not None:
                     push(event)
-                if event.notice:
-                    parts.append(f"\n{event.notice}")
-                if event.text:
-                    parts.append(event.text)
                 if event.done:
-                    return "".join(parts)
+                    return event.final_text or ""
         return NOTICE_CANCELLED

@@ -10,6 +10,7 @@ from rich.table import Table
 from rich.text import Text
 
 from termcode.agent import ApprovalRequest
+from termcode.llm import error_message as error_message
 from termcode.permission import Mode
 
 
@@ -47,29 +48,6 @@ def render_markdown(reply: str, elapsed: float) -> Group:
         Text(f"完成 · {elapsed:.1f}s", style="dim"),
         Text(""),
     )
-
-
-def error_message(error: Exception) -> str:
-    """不显示 SDK 异常原文，其中可能包含反射的密钥和请求体。"""
-    status = getattr(error, "status_code", None)
-    name = type(error).__name__
-    if status in {401, 403}:
-        return f"认证失败（HTTP {status}），请检查密钥和访问权限。"
-    if status == 429:
-        return "请求受限（HTTP 429），请稍后手动重试。"
-    if status == 404:
-        return "模型或接口不存在（HTTP 404），请检查 model 和 base_url。"
-    if status == 400:
-        return "请求被拒绝（HTTP 400），请检查模型是否支持当前协议和 thinking 设置。"
-    if status is not None:
-        return f"服务商返回错误（HTTP {status}），请检查配置或稍后重试。"
-    if "Timeout" in name:
-        return "请求超时，请检查网络或稍后重试。"
-    if "Connection" in name:
-        return "网络连接失败，请检查网络和 base_url。"
-    if isinstance(error, RuntimeError):
-        return str(error)
-    return "请求失败，请检查网络、服务商配置或响应格式。"
 
 
 def error_block(message: str, elapsed: float) -> Text:

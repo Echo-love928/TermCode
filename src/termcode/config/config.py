@@ -39,6 +39,7 @@ def effective_context_window(p: ProviderConfig) -> int:
 @dataclass
 class Config:
     providers: list[ProviderConfig] = field(default_factory=list)
+    enable_subagent_background: bool = True
 
 
 def load(path: str | Path) -> Config:
@@ -125,4 +126,9 @@ def _from_dict(data: object) -> Config:
                 context_window=context_window,
             )
         )
-    return Config(providers)
+    background = data.get(
+        "enable_subagent_background", data.get("enableSubAgentBackground", True)
+    )
+    if not isinstance(background, bool):
+        raise ConfigError("enable_subagent_background 必须是布尔值 true 或 false")
+    return Config(providers, background)

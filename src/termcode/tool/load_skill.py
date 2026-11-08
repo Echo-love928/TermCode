@@ -51,9 +51,14 @@ class LoadSkill:
         mode: Mode,
         cancel: asyncio.Event | None = None,
         push: Callable[[Event | ApprovalRequest], None] | None = None,
+        *,
+        agent: Agent | None = None,
     ) -> Result:
         if self._loader is None or self._executor is None:
             return Result("LoadSkill not properly initialized", is_error=True)
+        executor = self._executor
+        if agent is not None and executor.agent is not agent:
+            executor = SkillExecutor(agent)
         try:
             name = arguments(args, self.parameters())["name"]
         except ValueError as exc:
@@ -63,7 +68,7 @@ class LoadSkill:
             names = ", ".join(name for name, _ in self._loader.get_catalog()) or "无"
             return Result(f"未知 Skill {name!r}。可用 Skill：{names}", is_error=True)
         if skill.mode == "inline":
-            self._executor.execute_inline(skill, "")
+            executor.execute_inline(skill, "")
             return Result(
                 f"Skill '{name}' activated. SOP pinned to environment context."
             )
@@ -71,7 +76,7 @@ class LoadSkill:
             (msg.content for msg in reversed(conv.messages()) if msg.role == "user"), ""
         )
         try:
-            output = await self._executor.execute_fork(
+            output = await executor.execute_fork(
                 skill, request, conv, mode, cancel, push
             )
         except Exception as exc:

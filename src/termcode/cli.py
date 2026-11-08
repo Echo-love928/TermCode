@@ -35,6 +35,7 @@ def main() -> None:
 async def _run(config: ProviderConfig) -> None:
     from termcode import __version__, hook
     from termcode.agent import SessionRuntime
+    from termcode.agent.agent_tool import AgentTool
     from termcode.compact import new_session_context
     from termcode.config import effective_context_window
     from termcode.instructions import Loader
@@ -43,6 +44,9 @@ async def _run(config: ProviderConfig) -> None:
     from termcode.permission import new_engine
     from termcode.session import Writer, clean_expired
     from termcode.skills.loader import SkillLoader
+    from termcode.subagent import load_catalog
+    from termcode.task import Manager as TaskManager
+    from termcode.task import SendMessageTool, TaskGetTool, TaskListTool, TaskStopTool
     from termcode.tool import new_default_registry
     from termcode.tui.app import TermCodeApp
     from termcode.tui.keys import configure_terminal_keys
@@ -59,6 +63,21 @@ async def _run(config: ProviderConfig) -> None:
         context_window=effective_context_window(config.providers[0]),
     )
     registry = new_default_registry()
+    catalog = load_catalog(root)
+    task_mgr = TaskManager()
+    for subagent_tool in (
+        AgentTool(
+            catalog,
+            task_mgr,
+            bg_enabled=config.enable_subagent_background,
+            providers=tuple(config.providers),
+        ),
+        TaskListTool(task_mgr),
+        TaskGetTool(task_mgr),
+        TaskStopTool(task_mgr),
+        SendMessageTool(task_mgr),
+    ):
+        registry.register(subagent_tool)
     skill_loader = SkillLoader(root)
     skill_loader.load_all()
     try:
@@ -92,6 +111,9 @@ async def _run(config: ProviderConfig) -> None:
             cancel_background=manager.cancel_pending,
             skill_loader=skill_loader,
             hook_engine=hook_engine if hook_engine.rules else None,
+            task_mgr=task_mgr,
+            subagent_catalog=catalog,
+            enable_subagent_background=config.enable_subagent_background,
         )
         try:
             await app.run_async(inline=True)
@@ -107,6 +129,7 @@ async def _run(config: ProviderConfig) -> None:
                 await hook_engine.aclose()
                 app.print_transcript()
     finally:
+        await task_mgr.clear()
         await mem_mgr.close()
         if writer:
             writer.close()

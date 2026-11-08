@@ -21,6 +21,13 @@ FRIENDLY_NAMES = {
 }
 FILE_TOOLS = frozenset(FRIENDLY_NAMES) - {"bash"}
 SKILL_TARGETS = {"LoadSkill": "name", "InstallSkill": "url"}
+TASK_TARGETS = {
+    "Agent": "subagent_type",
+    "TaskList": "",
+    "TaskGet": "task_id",
+    "TaskStop": "task_id",
+    "SendMessage": "name",
+}
 
 
 class SettingsError(Exception):
@@ -106,6 +113,11 @@ def extract_target(call: ToolCall) -> tuple[str, bool, bool]:
             target = data.get("command", "")
         elif call.name in SKILL_TARGETS:
             target = data.get(SKILL_TARGETS[call.name], "")
+        elif call.name in TASK_TARGETS:
+            default = "fork" if call.name == "Agent" else call.name
+            target = data.get(TASK_TARGETS[call.name], default)
+            if call.name == "Agent" and isinstance(target, str):
+                target = target.strip() or default
         else:
             return "", False, False
         ok = isinstance(target, str) and bool(target.strip()) and "\x00" not in target

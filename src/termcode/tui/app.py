@@ -3,6 +3,7 @@
 import asyncio
 import os
 import time
+from collections import deque
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
@@ -21,6 +22,7 @@ from textual.widgets import OptionList, RichLog, Static, TextArea
 
 from termcode import __version__
 from termcode.agent import Agent, ApprovalRequest, SessionRuntime, ToolEvent
+from termcode.agent.agent_tool import AgentTool
 from termcode.command import Registry as CommandRegistry
 from termcode.command import register_builtins
 from termcode.command.skills import register_skill_commands, register_skill_manager
@@ -36,6 +38,8 @@ from termcode.session import Writer
 from termcode.skills.executor import SkillExecutor
 from termcode.skills.loader import SkillLoader
 from termcode.skills.parser import SkillDef
+from termcode.subagent import Catalog
+from termcode.task import Manager as TaskManager
 from termcode.tool import Registry, new_default_registry
 from termcode.tool.install_skill import InstallSkillTool
 from termcode.tool.load_skill import LoadSkill
@@ -82,10 +86,12 @@ class ChatInput(TextArea):
 
     async def on_key(self, event: events.Key) -> None:
         app = self.app
-        if isinstance(app, TermCodeApp) and await app._handle_completion_key(
-            event, self
-        ):
-            return
+        if isinstance(app, TermCodeApp):
+            if app.state == SessionState.APPROVING:
+                app.on_key(event)
+                return
+            if await app._handle_completion_key(event, self):
+                return
         if event.key == "shift+tab":
             # 交给应用级模式绑定，不让编辑器将其解释为反向缩进。
             return
@@ -150,6 +156,9 @@ class TermCodeApp(App[None]):
         cancel_background: Callable[[], None] | None = None,
         skill_loader: SkillLoader | None = None,
         hook_engine: HookEngine | None = None,
+        task_mgr: TaskManager | None = None,
+        subagent_catalog: Catalog | None = None,
+        enable_subagent_background: bool = True,
     ) -> None:
         super().__init__()
         if not providers:
@@ -175,6 +184,11 @@ class TermCodeApp(App[None]):
         self.writer = writer
         self.mem_mgr = mem_mgr
         self._cancel_background = cancel_background
+        self.task_mgr = task_mgr
+        self.subagent_catalog = subagent_catalog
+        self.enable_subagent_background = enable_subagent_background
+        self._task_done_worker: asyncio.Task[None] | None = None
+        self._task_approvals: deque[ApprovalRequest] = deque()
         self.instruction_text = instruction_text
         self.memory_text = memory_text
         self.workspace = os.getcwd()
@@ -249,7 +263,58 @@ class TermCodeApp(App[None]):
             self._activate_provider(0)
         else:
             self._show_selection(True)
+        if self.task_mgr is not None:
+            self.task_mgr.approval_sink = self._queue_task_approval
+            self._task_done_worker = asyncio.create_task(
+                self._consume_task_done(self.task_mgr)
+            )
         await self._open_hook_session(HookEvent.SESSION_START)
+
+    async def _consume_task_done(self, manager: TaskManager) -> None:
+        done = manager.subscribe_done()
+        while True:
+            task_id = await done.get()
+            if notice := manager.take_notification(task_id):
+                self.runtime.append_reminders([notice])
+
+    def _queue_task_approval(self, request: ApprovalRequest) -> None:
+        if self.pending is request:
+            self.pending = None
+            self.state = SessionState.STREAMING
+            self._refresh_streaming_view()
+        self._task_approvals.append(request)
+        request.respond.add_done_callback(lambda _: self._finish_task_approval(request))
+        self._show_task_approval()
+
+    def _show_task_approval(self) -> None:
+        if self.state != SessionState.IDLE or self._quitting:
+            return
+        while self._task_approvals:
+            request = self._task_approvals.popleft()
+            if not request.respond.done():
+                self.query_one("#streaming-scroll").display = True
+                self._show_approval(request)
+                return
+
+    def _show_approval(self, request: ApprovalRequest) -> None:
+        self.pending = request
+        self.approve_cursor = 0
+        self.state = SessionState.APPROVING
+        self.completion.hide()
+        self._render_completion()
+        editor = self.query_one("#input", ChatInput)
+        editor.read_only = True
+        editor.blur()
+        self._refresh_streaming_view()
+
+    def _finish_task_approval(self, request: ApprovalRequest) -> None:
+        if self.pending is request and not self._quitting and self.is_running:
+            self._return_to_idle()
+
+    async def _clear_tasks(self) -> None:
+        if self.task_mgr is not None:
+            await self.task_mgr.clear()
+        self._task_approvals.clear()
 
     async def _open_hook_session(self, event: HookEvent) -> None:
         self._hook_session_ended = False
@@ -337,6 +402,9 @@ class TermCodeApp(App[None]):
 
     def _bind_agent(self, agent: Agent) -> None:
         self.agent = agent
+        agent_tool = self._tool_registry.get("Agent")
+        if isinstance(agent_tool, AgentTool):
+            agent_tool.set_parent(agent)
         if self._load_skill_tool is not None:
             self.skill_executor = SkillExecutor(agent, self._provider_config)
             self._load_skill_tool.set_agent(agent, self.skill_executor)
@@ -573,9 +641,11 @@ class TermCodeApp(App[None]):
         self.query_one("#streaming-scroll").display = False
         editor = self.query_one("#input", ChatInput)
         editor.read_only = False
-        editor.focus()
         self._completion_text = ""
-        self._sync_completion_from_input(editor.text)
+        self._show_task_approval()
+        if self.state == SessionState.IDLE:
+            editor.focus()
+            self._sync_completion_from_input(editor.text)
 
     def action_history_up(self) -> None:
         viewport = self.query_one("#transcript", TranscriptViewport)
@@ -588,6 +658,7 @@ class TermCodeApp(App[None]):
         viewport.scroll_page_down(animate=False)
 
     async def _close_provider(self) -> None:
+        await self._clear_tasks()
         if self.mem_mgr:
             await self.mem_mgr.close()
         if self.writer:
@@ -608,6 +679,19 @@ class TermCodeApp(App[None]):
 
             if isinstance(self.screen, ResumeScreen):
                 self.screen.dismiss(None)
+            return
+        if (
+            self.enable_subagent_background
+            and self.task_mgr is not None
+            and self.task_mgr.request_detach()
+        ):
+            return
+        self._cancel_current_turn()
+
+    def _cancel_current_turn(self) -> None:
+        if self.pending is not None and self.pending.background:
+            if not self.pending.respond.done():
+                self.pending.respond.set_result(Outcome.DENY_ONCE)
             return
         if (
             self.state in (SessionState.STREAMING, SessionState.APPROVING)
@@ -633,7 +717,7 @@ class TermCodeApp(App[None]):
 
     async def action_interrupt(self) -> None:
         if self.state in (SessionState.STREAMING, SessionState.APPROVING):
-            self.action_cancel_turn()
+            self._cancel_current_turn()
         else:
             await self.action_quit()
 
@@ -662,10 +746,16 @@ class TermCodeApp(App[None]):
         self.exit()
 
     async def on_unmount(self) -> None:
+        self._quitting = True
         if self._stream_task:
             self._stream_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._stream_task
+        if self._task_done_worker is not None:
+            self._task_done_worker.cancel()
+            await asyncio.gather(self._task_done_worker, return_exceptions=True)
+        if self.task_mgr is not None:
+            self.task_mgr.approval_sink = None
         await self.end_hook_session()
         await self._close_provider()
 
