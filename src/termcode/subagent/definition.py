@@ -30,6 +30,7 @@ class Definition:
     system_prompt: str = ""
     file_path: str = ""
     source: Source = Source.BUILTIN
+    isolation: str = ""
 
     def is_fork(self) -> bool:
         return self.name == "__fork__"

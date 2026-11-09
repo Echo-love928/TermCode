@@ -132,5 +132,6 @@ def test_ready_hint_only_links_help():
     from termcode.prompt import READY_HINT, render_banner
 
     assert "/help" in READY_HINT
+    assert "Ctrl+J 换行" in READY_HINT
     assert READY_HINT in render_banner("test", "/workspace")
     assert "/plan" not in READY_HINT and "/do" not in READY_HINT

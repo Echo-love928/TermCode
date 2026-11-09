@@ -25,6 +25,7 @@ from termcode.permission.settings import (
     to_rule_set,
 )
 from termcode.permission.types import Category, Decision, Mode, parse_mode
+from termcode.tool import cwd_from_ctx, resolve_path
 
 
 def mode_fallback(mode: Mode, category: Category) -> Decision:
@@ -71,15 +72,24 @@ class Engine:
         category = categorize(call.name, read_only)
         friendly = friendly_name(call.name)
         target, is_file, ok = extract_target(call)
+        logical_target = None
         # 真正的命令始终先检查黑名单，不依赖外部误标的只读属性。
         if call.name == "bash" and target and hits_blacklist(target):
             return Decision.DENY, "命中危险命令黑名单：" + target
         if is_file:
             if not ok:
                 return Decision.DENY, "无法解析文件路径参数，安全拒绝"
+            cwd = cwd_from_ctx()
+            if cwd is not None:
+                target = resolve_path(target)
             if not sandbox_ok(self, target):
                 return Decision.DENY, "路径在项目目录之外：" + target
             try:
+                if cwd is not None:
+                    actual = Path(eval_symlinks_or_ancestor(target))
+                    if not actual.is_relative_to(cwd):
+                        return Decision.DENY, "路径在当前 Worktree 之外：" + target
+                    logical_target = actual.relative_to(cwd).as_posix()
                 target = self.relative_target(target)
             except (OSError, RuntimeError, ValueError):
                 return Decision.DENY, "无法解析文件路径参数，安全拒绝"
@@ -95,9 +105,11 @@ class Engine:
         elif not ok:
             return Decision.DENY, "无法解析命令参数，安全拒绝"
         # 三层合并后先比较裁决效果，层级不覆盖更严格的规则。
+        targets = (target, logical_target) if logical_target is not None else (target,)
         matches = [
             rules.matching_rule(friendly, target)
             for rules in (self.user, self.project, self.local)
+            for target in targets
         ]
         for decision in (Decision.DENY, Decision.ASK, Decision.ALLOW):
             for result, rule in matches:

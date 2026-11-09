@@ -42,7 +42,7 @@ from termcode.llm import Usage as LLMUsage
 from termcode.memory import Manager
 from termcode.permission import Decision, Engine, Mode, Outcome, new_engine
 from termcode.prompt.environment import build_environment_context
-from termcode.tool import Registry
+from termcode.tool import Registry, cwd_from_ctx, resolve_path
 from termcode.tool.load_skill import LoadSkill
 
 MAX_ITERATIONS = 25
@@ -289,7 +289,9 @@ class Agent:
     ) -> DispatchResult:
         if self.runtime.hook_engine is None:
             return DispatchResult()
-        operation = self.runtime.dispatch_hook(event, self.engine.root, mode, payload)
+        operation = self.runtime.dispatch_hook(
+            event, cwd_from_ctx() or self.engine.root, mode, payload
+        )
         return (
             await _until_cancel(operation, cancel)
             if cancel is not None
@@ -784,7 +786,9 @@ class Agent:
             if call.name == "read_file" and not result.is_error:
                 try:
                     args = json.loads(call.input)
-                    path = await asyncio.to_thread(Path(args["path"]).resolve)
+                    path = await asyncio.to_thread(
+                        Path(resolve_path(args["path"])).resolve
+                    )
                     data = await asyncio.to_thread(path.read_bytes)
                     self.runtime.recovery.record_file(
                         str(path), data.decode("utf-8", errors="replace")

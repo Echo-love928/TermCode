@@ -87,6 +87,7 @@ def test_catalog_layers_and_fallback(tmp_path, monkeypatch, capsys):
         "system_prompt",
         "file_path",
         "source",
+        "isolation",
     }
     home = tmp_path / "home"
     monkeypatch.setattr(Path, "home", lambda: home)

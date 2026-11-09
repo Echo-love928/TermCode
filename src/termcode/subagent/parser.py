@@ -33,10 +33,10 @@ def parse_definition(data: bytes, file_path: str, source: Source) -> Definition:
             file=sys.stderr,
         )
         model = "inherit"
-    max_turns = meta.get("maxTurns", 0)
+    max_turns = meta.get("maxTurns", meta.get("max_turns", 0))
     if type(max_turns) is not int or max_turns < 0:
         raise ValueError("maxTurns 必须是非负整数")
-    raw_mode = meta.get("permissionMode", "default")
+    raw_mode = meta.get("permissionMode", meta.get("permission_mode", "default"))
     dont_ask = isinstance(raw_mode, str) and raw_mode.casefold() == "dontask"
     mode, valid = parse_mode(raw_mode if isinstance(raw_mode, str) else "")
     if not valid and not dont_ask:
@@ -48,6 +48,10 @@ def parse_definition(data: bytes, file_path: str, source: Source) -> Definition:
     background = meta.get("background", False)
     if not isinstance(background, bool):
         raise ValueError("background 必须是布尔值")
+    isolation = meta.get("isolation", "")
+    if isolation not in ("", "worktree"):
+        print(f"{file_path} 的 isolation 值无效：{isolation!r}", file=sys.stderr)
+        isolation = ""
     return Definition(
         name=name.strip(),
         description=description.strip(),
@@ -61,6 +65,7 @@ def parse_definition(data: bytes, file_path: str, source: Source) -> Definition:
         system_prompt=body,
         file_path=file_path,
         source=source,
+        isolation=isolation,
     )
 
 

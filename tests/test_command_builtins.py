@@ -1,6 +1,7 @@
 """验证内置命令种类、实际输出、注入文本与忙碌限制。"""
 
 from termcode.command import Kind, NopUI, Registry, register_builtins
+from termcode.command.builtin_worktree import handle_worktree
 from termcode.permission import Mode
 from termcode.prompt import EXECUTE_DIRECTIVE
 
@@ -18,6 +19,7 @@ NAMES = [
     "review",
     "session",
     "status",
+    "worktree",
 ]
 
 
@@ -65,7 +67,7 @@ def test_register_builtins_all_registered():
     commands = registry().visible()
     assert [cmd.name for cmd in commands] == NAMES
     assert sum(cmd.kind == Kind.LOCAL for cmd in commands) == 6
-    assert sum(cmd.kind == Kind.UI for cmd in commands) == 5
+    assert sum(cmd.kind == Kind.UI for cmd in commands) == 6
     assert sum(cmd.kind == Kind.PROMPT for cmd in commands) == 2
     assert all(cmd.description and not cmd.hidden for cmd in commands)
 
@@ -96,6 +98,15 @@ async def test_help_uses_current_registry_and_hides_hidden():
         len(row) - len(reg.lookup(row.split()[0][1:]).description) for row in rows
     } == {13}
     assert "secret" not in ui.output[0]
+
+
+async def test_worktree_registered_and_reports_unavailable_manager():
+    command = registry().lookup("worktree")
+    assert command.kind == Kind.UI and command.argument_handler is handle_worktree
+    ui = RecordingUI()
+    assert ui.worktree_accessor() is None
+    await command.argument_handler(ui, "list")
+    assert ui.errors == ["Worktree 功能未启用"]
 
 
 async def test_handle_status_prints_all_keys():

@@ -6,6 +6,8 @@ import sys
 from dataclasses import dataclass
 from datetime import date
 
+from termcode.tool.ctx import cwd_from_ctx
+
 
 @dataclass(frozen=True)
 class Environment:
@@ -49,7 +51,7 @@ def build_environment_context(
 def gather_environment(version: str, model: str) -> Environment:
     """只读取允许的环境项；git 不可用、失败或超时均降级。"""
     try:
-        working_dir = os.getcwd()
+        working_dir = cwd_from_ctx() or os.getcwd()
     except OSError:
         working_dir = ""
     try:

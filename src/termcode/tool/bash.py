@@ -7,7 +7,14 @@ import signal
 import sys
 from typing import Any
 
-from termcode.tool import TRUNCATED, Result, _truncate, arguments, string_schema
+from termcode.tool import (
+    TRUNCATED,
+    Result,
+    _truncate,
+    arguments,
+    resolve_path,
+    string_schema,
+)
 
 
 class BashTool:
@@ -30,6 +37,7 @@ class BashTool:
             data = arguments(args, self.parameters())
             proc = await asyncio.create_subprocess_shell(
                 data["command"],
+                cwd=resolve_path(""),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=os.name != "nt",

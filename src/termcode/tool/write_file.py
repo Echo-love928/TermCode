@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from termcode.tool import Result, arguments, string_schema
+from termcode.tool import Result, arguments, resolve_path, string_schema
 
 
 class WriteFileTool:
@@ -22,7 +22,9 @@ class WriteFileTool:
     async def execute(self, args: str) -> Result:
         try:
             data = arguments(args, self.parameters())
-            await asyncio.to_thread(self._write, Path(data["path"]), data["content"])
+            await asyncio.to_thread(
+                self._write, Path(resolve_path(data["path"])), data["content"]
+            )
             size = len(data["content"].encode("utf-8"))
             return Result(f"已写入 {data['path']}（{size} 字节）")
         except Exception as exc:

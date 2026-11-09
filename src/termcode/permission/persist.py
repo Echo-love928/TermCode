@@ -13,6 +13,7 @@ from termcode.permission.rule import Rule, escape_glob, parse_rule
 from termcode.permission.sandbox import sandbox_ok
 from termcode.permission.settings import extract_target, friendly_name, load_settings
 from termcode.permission.types import ApprovalError
+from termcode.tool import cwd_from_ctx, resolve_path
 
 if TYPE_CHECKING:
     from termcode.permission.engine import Engine
@@ -24,6 +25,8 @@ def rule_for(engine: Engine, call: ToolCall) -> tuple[Rule, str, bool]:
         text = call.name
     else:
         target, is_file, ok = extract_target(call)
+        if is_file and cwd_from_ctx() is not None:
+            target = resolve_path(target)
         if not ok or (is_file and not sandbox_ok(engine, target)):
             return Rule(""), "", False
         if is_file:

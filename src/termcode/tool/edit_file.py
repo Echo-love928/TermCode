@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from termcode.tool import Result, arguments, string_schema
+from termcode.tool import Result, arguments, resolve_path, string_schema
 
 
 class EditFileTool:
@@ -37,7 +37,7 @@ class EditFileTool:
 
     @staticmethod
     def _edit(data: dict[str, str]) -> Result:
-        path = Path(data["path"])
+        path = Path(resolve_path(data["path"]))
         # 保留原始换行符，避免修改不相关的 CRLF 内容。
         with path.open(encoding="utf-8", newline="") as source:
             content = source.read()

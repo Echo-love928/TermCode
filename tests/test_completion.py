@@ -16,14 +16,16 @@ def test_filter_scroll_and_render():
     menu = CompletionMenu()
     reg = registry()
     menu.update("/", reg)
-    assert menu.active and len(menu.items) == 13
+    assert menu.active and len(menu.items) == 14
     assert len(menu.render(80).plain.splitlines()) <= MAX_ROWS
     for _ in range(20):
         menu.move_down()
-    assert menu.selected().name == "status"
+    assert menu.selected().name == "worktree"
     assert menu.offset == len(menu.items) - MAX_ROWS
     assert "/status" in menu.render(80).plain
     assert menu.render(80).spans
+    menu.move_up()
+    assert menu.selected().name == "status"
     menu.move_up()
     assert menu.selected().name == "session"
     menu.update("/S", reg)

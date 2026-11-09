@@ -9,6 +9,7 @@ from rich.text import Text
 
 from termcode.agent import NOTICE_CANCELLED, CompactEvent, CompactPhase
 from termcode.command import Kind, parse
+from termcode.command.ui import WorktreeAccessor
 from termcode.compact import new_session_context
 from termcode.conversation import Conversation
 from termcode.hook import Event as HookEvent
@@ -72,7 +73,10 @@ class CommandUI:
         return self.app.provider.model if self.app.provider else ""
 
     def cwd(self) -> str:
-        return self.app.workspace
+        return self.app.active_cwd or self.app.workspace
+
+    def worktree_accessor(self) -> WorktreeAccessor | None:
+        return self.app.worktree_accessor()
 
     def tool_count(self) -> int:
         return self.app._tool_registry.count()

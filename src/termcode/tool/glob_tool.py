@@ -5,7 +5,15 @@ from bisect import insort
 from pathlib import Path
 from typing import Any
 
-from termcode.tool import TRUNCATED, Result, _truncate, arguments, string_schema
+from termcode.tool import (
+    TRUNCATED,
+    Result,
+    _truncate,
+    arguments,
+    cwd_from_ctx,
+    resolve_path,
+    string_schema,
+)
 
 
 class GlobTool:
@@ -25,7 +33,8 @@ class GlobTool:
     async def execute(self, args: str) -> Result:
         try:
             data = arguments(args, self.parameters())
-            root = Path(data.get("path", "."))
+            root = Path(resolve_path(data.get("path", ".")))
+            scoped = cwd_from_ctx()
             if not await asyncio.to_thread(root.is_dir):
                 return Result(f"目录不存在或不可读: {root}", is_error=True)
             paths: list[str] = []
@@ -37,6 +46,10 @@ class GlobTool:
                 if index % 100 == 0:
                     await asyncio.sleep(0)
                 if await asyncio.to_thread(path.is_file):
+                    if scoped and not (
+                        await asyncio.to_thread(path.resolve)
+                    ).is_relative_to(scoped):
+                        continue
                     count += 1
                     # 有界有序集合保留全局字典序前 100 条，不保存全部路径。
                     insort(paths, path.relative_to(root).as_posix())

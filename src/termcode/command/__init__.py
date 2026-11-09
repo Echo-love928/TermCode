@@ -4,7 +4,7 @@ from .builtins import register_builtins
 from .command import Command, Handler, Kind
 from .dispatch import parse
 from .registry import Registry
-from .ui import UI, NopUI
+from .ui import UI, NopUI, WorktreeAccessor, WorktreeSummary
 
 __all__ = [
     "Command",
@@ -13,6 +13,8 @@ __all__ = [
     "Registry",
     "UI",
     "NopUI",
+    "WorktreeAccessor",
+    "WorktreeSummary",
     "parse",
     "register_builtins",
 ]

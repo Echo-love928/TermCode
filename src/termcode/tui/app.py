@@ -40,7 +40,7 @@ from termcode.skills.loader import SkillLoader
 from termcode.skills.parser import SkillDef
 from termcode.subagent import Catalog
 from termcode.task import Manager as TaskManager
-from termcode.tool import Registry, new_default_registry
+from termcode.tool import Registry, new_default_registry, with_cwd
 from termcode.tool.install_skill import InstallSkillTool
 from termcode.tool.load_skill import LoadSkill
 from termcode.tui.banner import (
@@ -63,6 +63,8 @@ from termcode.tui.view import (
     status_bar,
     user_block,
 )
+from termcode.tui.worktree_adapter import WorktreeAdapter
+from termcode.worktree import Manager as WorktreeManager
 
 
 class SessionState(Enum):
@@ -96,13 +98,13 @@ class ChatInput(TextArea):
             # 交给应用级模式绑定，不让编辑器将其解释为反向缩进。
             return
         # 与普通字符在同一控件队列中处理，避免优先绑定抢在粘贴文本之前执行。
-        if event.key in {"enter", "alt+enter"}:
+        if event.key in {"enter", "ctrl+j", "alt+enter"}:
             event.stop()
             event.prevent_default()
-            if event.key == "alt+enter":
-                self.action_newline()
-            else:
+            if event.key == "enter":
                 self.action_send()
+            else:
+                self.action_newline()
 
     def action_send(self) -> None:
         if not self.read_only and self.text.strip():
@@ -159,6 +161,7 @@ class TermCodeApp(App[None]):
         task_mgr: TaskManager | None = None,
         subagent_catalog: Catalog | None = None,
         enable_subagent_background: bool = True,
+        worktree_mgr: WorktreeManager | None = None,
     ) -> None:
         super().__init__()
         if not providers:
@@ -187,6 +190,9 @@ class TermCodeApp(App[None]):
         self.task_mgr = task_mgr
         self.subagent_catalog = subagent_catalog
         self.enable_subagent_background = enable_subagent_background
+        self.worktree_mgr = worktree_mgr
+        worktree_session = worktree_mgr.current_session() if worktree_mgr else None
+        self.active_cwd = worktree_session.worktree_path if worktree_session else ""
         self._task_done_worker: asyncio.Task[None] | None = None
         self._task_approvals: deque[ApprovalRequest] = deque()
         self.instruction_text = instruction_text
@@ -243,7 +249,7 @@ class TermCodeApp(App[None]):
             yield Static("", id="streaming", markup=False)
         with Horizontal(id="composer"):
             yield Static("❯", id="prompt")
-            yield ChatInput(id="input", placeholder="Send a message...")
+            yield ChatInput(id="input", placeholder="Send a message... · Ctrl+J 换行")
         yield Static("", id="completion", markup=False)
         yield Static("", id="submit-error", markup=False)
         yield Static("", id="statusbar", markup=False)
@@ -467,7 +473,7 @@ class TermCodeApp(App[None]):
             try:
                 result = await self.runtime.dispatch_hook(
                     HookEvent.USER_PROMPT_SUBMIT,
-                    self.workspace,
+                    self.active_cwd or self.workspace,
                     self.mode,
                     {"prompt": text},
                 )
@@ -490,6 +496,14 @@ class TermCodeApp(App[None]):
 
     async def dispatch_slash(self, text: str) -> bool:
         return await dispatch_slash(self, text)
+
+    def worktree_accessor(self) -> WorktreeAdapter | None:
+        if self.worktree_mgr is None:
+            return None
+        return WorktreeAdapter(self.worktree_mgr, self._set_active_cwd)
+
+    def _set_active_cwd(self, path: str) -> None:
+        self.active_cwd = path
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if (
@@ -573,7 +587,8 @@ class TermCodeApp(App[None]):
         self.query_one("#streaming-scroll").display = True
         self._refresh_streaming_view()
         self._timer = self.set_interval(0.1, lambda: tick(self))
-        self._stream_task = asyncio.create_task(consume_stream(self, fork=fork))
+        with with_cwd(self.active_cwd):
+            self._stream_task = asyncio.create_task(consume_stream(self, fork=fork))
 
     def _refresh_streaming_view(self) -> None:
         if self.state == SessionState.APPROVING and self.pending is not None:

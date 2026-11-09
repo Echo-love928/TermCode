@@ -5,7 +5,15 @@ import re
 from pathlib import Path
 from typing import Any
 
-from termcode.tool import TRUNCATED, Result, _truncate, arguments, string_schema
+from termcode.tool import (
+    TRUNCATED,
+    Result,
+    _truncate,
+    arguments,
+    cwd_from_ctx,
+    resolve_path,
+    string_schema,
+)
 
 
 class GrepTool:
@@ -28,7 +36,9 @@ class GrepTool:
         try:
             data = arguments(args, self.parameters())
             rx = re.compile(data["pattern"])
-            root = Path(data.get("path", "."))
+            requested = data.get("path", ".")
+            root = Path(resolve_path(requested))
+            scoped = cwd_from_ctx()
             if not await asyncio.to_thread(root.exists):
                 return Result(f"路径不存在: {root}", is_error=True)
             if await asyncio.to_thread(root.is_file):
@@ -40,6 +50,11 @@ class GrepTool:
                 await asyncio.sleep(0)
                 if not await asyncio.to_thread(file.is_file):
                     continue
+                if scoped and not (
+                    await asyncio.to_thread(file.resolve)
+                ).is_relative_to(scoped):
+                    continue
+                display = file if scoped else Path(requested) / file.relative_to(root)
                 try:
                     with file.open(encoding="utf-8", errors="replace") as source:
                         lineno = 0
@@ -49,10 +64,10 @@ class GrepTool:
                                 return Result(
                                     _truncate("\n".join(matches))
                                     + TRUNCATED
-                                    + f"\n{file}:{lineno}:该行过长，未完整搜索"
+                                    + f"\n{display}:{lineno}:该行过长，未完整搜索"
                                 )
                             if rx.search(line):
-                                matches.append(f"{file}:{lineno}:{line.rstrip()}")
+                                matches.append(f"{display}:{lineno}:{line.rstrip()}")
                                 if len(matches) > 100:
                                     return Result(
                                         _truncate("\n".join(matches[:100])) + TRUNCATED

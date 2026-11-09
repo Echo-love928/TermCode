@@ -14,11 +14,11 @@
 - [ ] thinking：anthropic 配 `thinking: true` 时启用，且界面不出现任何思考文本（验证：开启后观察仅最终回复）。(AC5/F5) **待真实模型验收；本地协议与界面证据见 Acceptance.md。**
 - [x] 流式逐字：回复以纯文本逐字出现（验证：长回复肉眼可见逐步输出）。(AC5/F8)
 - [x] markdown 定型：回复结束后整段以 markdown 渲染（代码块/列表/强调正确）（验证：让模型输出含代码块与列表的内容）。(AC8/F8)
-- [x] 多行输入：Alt+Enter 换行、Enter 提交、提交后输入框清空（验证：输入两行后提交）。(AC9/F9)
+- [x] 多行输入支持 Ctrl+J 和兼容终端上的 Alt+Enter。2026-11-09 在真实 tmux 中用两个快捷键输入三行，窗格保持 180×48，按 Enter 才发出请求。输入框清空，`read_file` 返回 `NEWLINE_VERIFIED`，随后显示回复。(AC9/F9) [验收证据](../../.cache/tmux-e2e/termcode-e2e-54fca8ff4b/results.json)
 - [x] 响应计时：自提交即显示 `Imagining… (Ns)` 且秒数递增，结束后显示总耗时（验证：发一条慢回复观察）。(AC12/F12)
 - [x] 错误反馈：错误 key/不存在模型时，错误在对话区可区分样式（红色）显示且不退出（验证：改坏 key 运行后再正常发一条）。(AC11/F11)
 - [x] 退出：`/exit` 与 Ctrl+C 均能安全退出，终端恢复正常（验证：两种方式各试一次，观察无残留/错乱）。(AC10/F10/N7)
-- [x] 界面布局：启动含 ASCII 小狗 banner + 名称版本 + cwd + 就绪提示行 + 输入框（含 `❯` 与占位符）+ 状态栏（左 name 右 model）（验证：启动截图比对）。(AC7/F7)
+- [x] 界面布局：启动含 ASCII 小狗 banner + 名称版本 + cwd + 就绪提示行 + 输入框（含 `❯` 与占位符）+ 状态栏（左 name 右 model）（验证：启动截图比对）。2026-11-09 在 tmux 中确认就绪行显示 `Ctrl+J 换行`，按提示输入两行后成功提交并调用 `read_file`。(AC7/F7) [验收证据](../../.cache/tmux-e2e/termcode-e2e-0f8428a275/results.json)
 
 ## 集成
 

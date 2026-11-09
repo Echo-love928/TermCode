@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from termcode.agent.agent_worktree import _execute_with_worktree
 from termcode.agent.fork import build_forked_messages, is_fork_context
 from termcode.agent.launch import child_tools, prepare_child
 from termcode.conversation import Conversation
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from termcode.agent.agent import Agent, Push
     from termcode.config import ProviderConfig
     from termcode.subagent import Catalog
+    from termcode.worktree import Manager as WorktreeManager
 
 AUTO_BACKGROUND_SECONDS = 120
 
@@ -48,12 +50,14 @@ class AgentTool:
         bg_enabled: bool = True,
         *,
         providers: tuple[ProviderConfig, ...] = (),
+        worktree_mgr: WorktreeManager | None = None,
     ) -> None:
         self.catalog = catalog
         self.task_mgr = task_mgr
         self.parent = parent
         self.bg_enabled = bg_enabled
         self.providers = providers
+        self.worktree_mgr = worktree_mgr
         self._roles = "\n".join(
             f"- {role.name}: {' '.join(role.description.split())}"
             for role in catalog.list()
@@ -161,12 +165,17 @@ class AgentTool:
         )
         if definition is None:
             return Result(f"未知 subagent_type: {params.subagent_type}", is_error=True)
+        isolated = definition.isolation == "worktree"
+        if isolated and self.worktree_mgr is None:
+            return Result("Worktree 功能未启用，无法启动隔离子 Agent", is_error=True)
         fork = definition.is_fork()
-        if not self.bg_enabled and (params.run_in_background or fork):
+        if not isolated and not self.bg_enabled and (params.run_in_background or fork):
             message = "后台禁用，无法 Fork" if fork else "后台子 Agent 已禁用"
             return Result(message, is_error=True)
-        background = self.bg_enabled and (
-            fork or definition.background or params.run_in_background
+        background = (
+            not isolated
+            and self.bg_enabled
+            and (fork or definition.background or params.run_in_background)
         )
         conv = (
             Conversation.from_messages(
@@ -189,6 +198,13 @@ class AgentTool:
                 ),
                 permission_mode=mode if fork else None,
             )
+            if isolated:
+                assert self.worktree_mgr is not None
+                return Result(
+                    await _execute_with_worktree(
+                        self.worktree_mgr, child.agent, conv, params.prompt, push
+                    )
+                )
             if background:
                 task_id = await self.task_mgr.launch(
                     child.agent,

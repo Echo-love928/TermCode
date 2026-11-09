@@ -1,10 +1,28 @@
 """命令仅依赖此协议；空实现供无界面的调用和测试使用。"""
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from termcode.hook.rule import Rule
 from termcode.permission import Mode
 from termcode.skills.parser import SkillDef
+
+
+@dataclass(frozen=True)
+class WorktreeSummary:
+    name: str
+    path: str
+    branch: str
+    active: bool
+    manual: bool
+
+
+class WorktreeAccessor(Protocol):
+    async def create(self, name: str) -> tuple[str, str]: ...
+    def list(self) -> list[WorktreeSummary]: ...
+    async def enter(self, name: str) -> str: ...
+    async def exit(self, action: str, discard: bool) -> bool: ...
+    async def remove(self, name: str, discard: bool) -> None: ...
 
 
 class UI(Protocol):
@@ -29,6 +47,7 @@ class UI(Protocol):
     async def clear_and_new_session(self) -> None: ...
     def run_skill(self, skill: SkillDef, args: str) -> None: ...
     def idle(self) -> bool: ...
+    def worktree_accessor(self) -> WorktreeAccessor | None: ...
 
 
 class NopUI:
@@ -94,3 +113,6 @@ class NopUI:
 
     def idle(self) -> bool:
         return True
+
+    def worktree_accessor(self) -> WorktreeAccessor | None:
+        return None

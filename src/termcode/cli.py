@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from termcode.config import Config as ProviderConfig
@@ -33,7 +34,7 @@ def main() -> None:
 
 
 async def _run(config: ProviderConfig) -> None:
-    from termcode import __version__, hook
+    from termcode import __version__, hook, worktree
     from termcode.agent import SessionRuntime
     from termcode.agent.agent_tool import AgentTool
     from termcode.compact import new_session_context
@@ -64,6 +65,11 @@ async def _run(config: ProviderConfig) -> None:
     )
     registry = new_default_registry()
     catalog = load_catalog(root)
+    try:
+        worktree_mgr = worktree.Manager(root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"Worktree 管理器降级：{exc}", file=sys.stderr)
+        worktree_mgr = None
     task_mgr = TaskManager()
     for subagent_tool in (
         AgentTool(
@@ -71,6 +77,7 @@ async def _run(config: ProviderConfig) -> None:
             task_mgr,
             bg_enabled=config.enable_subagent_background,
             providers=tuple(config.providers),
+            worktree_mgr=worktree_mgr,
         ),
         TaskListTool(task_mgr),
         TaskGetTool(task_mgr),
@@ -91,6 +98,13 @@ async def _run(config: ProviderConfig) -> None:
         clean_expired(str(Path(root) / ".termcode/sessions"))
     )
     manager = await new_manager(load_config(root), __version__)
+    sweep_task = (
+        asyncio.create_task(
+            worktree_mgr.sweep_stale(datetime.now() - timedelta(hours=24))
+        )
+        if worktree_mgr is not None
+        else None
+    )
     try:
         for tool in manager.tools():
             registry.register(tool)
@@ -114,6 +128,7 @@ async def _run(config: ProviderConfig) -> None:
             task_mgr=task_mgr,
             subagent_catalog=catalog,
             enable_subagent_background=config.enable_subagent_background,
+            worktree_mgr=worktree_mgr,
         )
         try:
             await app.run_async(inline=True)
@@ -129,6 +144,9 @@ async def _run(config: ProviderConfig) -> None:
                 await hook_engine.aclose()
                 app.print_transcript()
     finally:
+        if sweep_task is not None:
+            sweep_task.cancel()
+            await asyncio.gather(sweep_task, return_exceptions=True)
         await task_mgr.clear()
         await mem_mgr.close()
         if writer:

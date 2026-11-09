@@ -163,12 +163,13 @@ async def test_partial_stream_failure_is_visible_and_recoverable(sse_server):
         assert app.query_one("#input", ChatInput).read_only is False
 
 
-async def test_burst_input_is_processed_before_enter(sse_server):
+@pytest.mark.parametrize("newline_key", ["alt+enter", "ctrl+j"])
+async def test_burst_input_is_processed_before_enter(sse_server, newline_key):
     app = TermCodeApp([local_config(sse_server)])
     async with app.run_test():
         for character in "第一行":
             app.post_message(events.Key(character, character))
-        app.post_message(events.Key("alt+enter", None))
+        app.post_message(events.Key(newline_key, None))
         for character in "第二行":
             app.post_message(events.Key(character, character))
         app.post_message(events.Key("enter", "\r"))

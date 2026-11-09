@@ -46,7 +46,7 @@ def build_system_prompt(instructions: str = "", memory: str = "") -> str:
 
 
 BANNER_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "startup-banner.png"
-READY_HINT = "就绪 · Enter 发送 · Alt+Enter 换行 · Esc 取消 · 输入 /help 查看可用命令"
+READY_HINT = "就绪 · Enter 发送 · Ctrl+J 换行 · Esc 取消 · 输入 /help 查看可用命令"
 
 
 @dataclass(frozen=True)

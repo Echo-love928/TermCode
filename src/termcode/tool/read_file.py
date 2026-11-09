@@ -4,7 +4,14 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from termcode.tool import TRUNCATED, Result, _truncate, arguments, string_schema
+from termcode.tool import (
+    TRUNCATED,
+    Result,
+    _truncate,
+    arguments,
+    resolve_path,
+    string_schema,
+)
 
 
 class ReadFileTool:
@@ -22,7 +29,7 @@ class ReadFileTool:
     async def execute(self, args: str) -> Result:
         try:
             data = arguments(args, self.parameters())
-            return await asyncio.to_thread(self._read, Path(data["path"]))
+            return await asyncio.to_thread(self._read, Path(resolve_path(data["path"])))
         except Exception as exc:
             return Result(f"读取失败: {exc}", is_error=True)
 
