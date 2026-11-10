@@ -3,6 +3,7 @@
 from .config import (
     Config,
     ConfigError,
+    FeaturesConfig,
     ProviderConfig,
     _from_dict,
     effective_context_window,
@@ -12,6 +13,7 @@ from .config import (
 __all__ = [
     "Config",
     "ConfigError",
+    "FeaturesConfig",
     "ProviderConfig",
     "_from_dict",
     "effective_context_window",

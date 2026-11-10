@@ -8,6 +8,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
 from enum import Enum
+from functools import partial
 from pathlib import Path
 
 from rich.console import Console, RenderableType
@@ -20,7 +21,7 @@ from textual.message import Message as UIMessage
 from textual.timer import Timer
 from textual.widgets import OptionList, RichLog, Static, TextArea
 
-from termcode import __version__
+from termcode import __version__, coordinator
 from termcode.agent import Agent, ApprovalRequest, SessionRuntime, ToolEvent
 from termcode.agent.agent_tool import AgentTool
 from termcode.command import Registry as CommandRegistry
@@ -40,6 +41,7 @@ from termcode.skills.loader import SkillLoader
 from termcode.skills.parser import SkillDef
 from termcode.subagent import Catalog
 from termcode.task import Manager as TaskManager
+from termcode.team import Manager as TeamManager
 from termcode.tool import Registry, new_default_registry, with_cwd
 from termcode.tool.install_skill import InstallSkillTool
 from termcode.tool.load_skill import LoadSkill
@@ -53,7 +55,13 @@ from termcode.tui.banner import (
 from termcode.tui.commands import CommandUI, dispatch_slash
 from termcode.tui.complete import CompletionMenu
 from termcode.tui.select import provider_list
-from termcode.tui.stream import consume_stream, tick, update_approving
+from termcode.tui.stream import (
+    begin_autonomous_turn,
+    consume_stream,
+    tick,
+    update_approving,
+)
+from termcode.tui.tasks import LeadMailMessage, consume_lead_mail
 from termcode.tui.view import (
     approval_block,
     clean_text,
@@ -162,6 +170,8 @@ class TermCodeApp(App[None]):
         subagent_catalog: Catalog | None = None,
         enable_subagent_background: bool = True,
         worktree_mgr: WorktreeManager | None = None,
+        team_mgr: TeamManager | None = None,
+        coordinator_mode: bool = False,
     ) -> None:
         super().__init__()
         if not providers:
@@ -191,6 +201,10 @@ class TermCodeApp(App[None]):
         self.subagent_catalog = subagent_catalog
         self.enable_subagent_background = enable_subagent_background
         self.worktree_mgr = worktree_mgr
+        self.team_mgr = team_mgr
+        self.coordinator_mode = coordinator_mode
+        self.lead_mail_event = asyncio.Event()
+        self._lead_mail_worker: asyncio.Task[None] | None = None
         worktree_session = worktree_mgr.current_session() if worktree_mgr else None
         self.active_cwd = worktree_session.worktree_path if worktree_session else ""
         self._task_done_worker: asyncio.Task[None] | None = None
@@ -274,7 +288,18 @@ class TermCodeApp(App[None]):
             self._task_done_worker = asyncio.create_task(
                 self._consume_task_done(self.task_mgr)
             )
+        if self.team_mgr is not None:
+            self._lead_mail_worker = asyncio.create_task(
+                consume_lead_mail(self, self.team_mgr)
+            )
         await self._open_hook_session(HookEvent.SESSION_START)
+
+    def on_lead_mail_message(self, _: LeadMailMessage) -> None:
+        if self._quitting or self.state != SessionState.IDLE:
+            return
+        self.lead_mail_event.clear()
+        if any(r.startswith("<team-update>") for r in self.runtime.pending_reminders):
+            begin_autonomous_turn(self)
 
     async def _consume_task_done(self, manager: TaskManager) -> None:
         done = manager.subscribe_done()
@@ -394,7 +419,7 @@ class TermCodeApp(App[None]):
         return self.agent
 
     def _create_agent(self, provider: Provider, runtime: SessionRuntime) -> Agent:
-        return Agent(
+        agent = Agent(
             provider,
             self._tool_registry,
             __version__,
@@ -405,6 +430,17 @@ class TermCodeApp(App[None]):
             memory_text=self.memory_text,
             hook_engine=self.hook_engine,
         )
+        if self._provider_config is not None:
+            agent.provider_name = self._provider_config.name
+        if self.team_mgr is not None:
+            agent.team_lead_tools = partial(
+                self.team_mgr.lead_registry,
+                coordinator=self.coordinator_mode,
+            )
+        if self.coordinator_mode:
+            agent.tool_limit = frozenset(coordinator.allowed_tools())
+            agent.prompt_suffix = coordinator.system_prompt_suffix()
+        return agent
 
     def _bind_agent(self, agent: Agent) -> None:
         self.agent = agent
@@ -415,6 +451,13 @@ class TermCodeApp(App[None]):
             self.skill_executor = SkillExecutor(agent, self._provider_config)
             self._load_skill_tool.set_agent(agent, self.skill_executor)
             agent.set_skill_catalog(self._skill_catalog)
+
+    def active_tool_registry(self) -> Registry:
+        if self.agent is not None and (
+            self.team_mgr is not None or self.coordinator_mode
+        ):
+            return self.agent.current_registry()
+        return self._tool_registry
 
     def _refresh_skills(self) -> None:
         if self.skill_loader is None:
@@ -440,6 +483,10 @@ class TermCodeApp(App[None]):
                     self._clean(self.provider.model),
                     self.usage_in,
                     self.usage_out,
+                    coordinator_mode=self.coordinator_mode,
+                    team_name=self._clean(self.team_mgr.active_team)
+                    if self.team_mgr
+                    else "",
                 )
             )
 
@@ -495,7 +542,10 @@ class TermCodeApp(App[None]):
         self._begin_turn(text)
 
     async def dispatch_slash(self, text: str) -> bool:
-        return await dispatch_slash(self, text)
+        handled = await dispatch_slash(self, text)
+        if self.team_mgr is not None and not self._quitting:
+            self._refresh_statusbar()
+        return handled
 
     def worktree_accessor(self) -> WorktreeAdapter | None:
         if self.worktree_mgr is None:
@@ -659,8 +709,11 @@ class TermCodeApp(App[None]):
         self._completion_text = ""
         self._show_task_approval()
         if self.state == SessionState.IDLE:
+            self._refresh_statusbar()
             editor.focus()
             self._sync_completion_from_input(editor.text)
+            if self.lead_mail_event.is_set():
+                self.post_message(LeadMailMessage())
 
     def action_history_up(self) -> None:
         viewport = self.query_one("#transcript", TranscriptViewport)
@@ -769,6 +822,9 @@ class TermCodeApp(App[None]):
         if self._task_done_worker is not None:
             self._task_done_worker.cancel()
             await asyncio.gather(self._task_done_worker, return_exceptions=True)
+        if self._lead_mail_worker is not None:
+            self._lead_mail_worker.cancel()
+            await asyncio.gather(self._lead_mail_worker, return_exceptions=True)
         if self.task_mgr is not None:
             self.task_mgr.approval_sink = None
         await self.end_hook_session()

@@ -20,6 +20,12 @@ if TYPE_CHECKING:
     from termcode.tui.app import TermCodeApp
 
 
+def begin_autonomous_turn(app: TermCodeApp) -> None:
+    text = "[team-update] 队员发来新消息，请结合团队进度处理并向用户汇报。"
+    app.conv.add_user(text)
+    app._begin_turn(text)
+
+
 async def consume_stream(
     app: TermCodeApp, *, fork: tuple[SkillDef, str] | None = None
 ) -> None:

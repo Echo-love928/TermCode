@@ -9,7 +9,7 @@ from pathlib import Path
 from termcode.compact.state import parse_session_time
 
 
-def _clean(sessions_dir: str, max_age: timedelta) -> None:
+def _clean(sessions_dir: str, max_age: timedelta, protected: frozenset[str]) -> None:
     root = Path(sessions_dir).resolve()
     if not root.is_dir():
         return
@@ -19,6 +19,7 @@ def _clean(sessions_dir: str, max_age: timedelta) -> None:
             target = directory.resolve()
             if (
                 directory.is_symlink()
+                or str(target) in protected
                 or not target.is_relative_to(root)
                 or not directory.is_dir()
             ):
@@ -32,6 +33,9 @@ def _clean(sessions_dir: str, max_age: timedelta) -> None:
 
 
 async def clean_expired(
-    sessions_dir: str, max_age: timedelta = timedelta(days=30)
+    sessions_dir: str,
+    max_age: timedelta = timedelta(days=30),
+    *,
+    protected: frozenset[str] = frozenset(),
 ) -> None:
-    await asyncio.to_thread(_clean, sessions_dir, max_age)
+    await asyncio.to_thread(_clean, sessions_dir, max_age, protected)

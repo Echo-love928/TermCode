@@ -1,11 +1,14 @@
 """命令仅依赖此协议；空实现供无界面的调用和测试使用。"""
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from termcode.hook.rule import Rule
 from termcode.permission import Mode
 from termcode.skills.parser import SkillDef
+
+if TYPE_CHECKING:
+    from termcode.team import Manager as TeamManager
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,7 @@ class UI(Protocol):
     def run_skill(self, skill: SkillDef, args: str) -> None: ...
     def idle(self) -> bool: ...
     def worktree_accessor(self) -> WorktreeAccessor | None: ...
+    def team_manager(self) -> "TeamManager | None": ...
 
 
 class NopUI:
@@ -115,4 +119,7 @@ class NopUI:
         return True
 
     def worktree_accessor(self) -> WorktreeAccessor | None:
+        return None
+
+    def team_manager(self) -> "TeamManager | None":
         return None

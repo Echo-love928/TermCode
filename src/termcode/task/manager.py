@@ -14,11 +14,13 @@ from uuid import uuid4
 
 from termcode.agent import ApprovalRequest, Event, MaxTurnsReached, Phase
 from termcode.permission import Outcome
+from termcode.tool import with_cwd
 
 if TYPE_CHECKING:
     from termcode.agent import Agent
     from termcode.agent.agent import Push
     from termcode.conversation import Conversation
+    from termcode.team.registry import AgentNameRegistry
 
 
 class Status(StrEnum):
@@ -65,6 +67,8 @@ class BackgroundTask:
     approval: ApprovalRequest | None = field(default=None, repr=False)
     detach: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     inline_push: Push | None = field(default=None, repr=False)
+    cwd: str = ""
+    restore: Callable[[], Conversation] | None = field(default=None, repr=False)
 
 
 def build_task_notification(task: BackgroundTask) -> str:
@@ -81,15 +85,28 @@ class Manager:
     def __init__(self) -> None:
         self._tasks: dict[str, BackgroundTask] = {}
         self._by_name: dict[str, str] = {}
+        self.name_registry: AgentNameRegistry | None = None
+        self._done_callbacks: list[Callable[[str], Awaitable[None]]] = []
+        self._callback_tasks: set[asyncio.Task[None]] = set()
+        self.clearing = False
         self._done: asyncio.Queue[str] = asyncio.Queue()
         self._notifications: dict[str, deque[str]] = defaultdict(deque)
         self.foreground: BackgroundTask | None = None
         self.approval_sink: Callable[[ApprovalRequest], None] | None = None
 
+    def set_name_registry(self, registry: AgentNameRegistry) -> None:
+        self.name_registry = registry
+
+    def on_task_done(self, callback: Callable[[str], Awaitable[None]]) -> None:
+        self._done_callbacks.append(callback)
+
     def _register(self, task: BackgroundTask) -> None:
         self._tasks[task.id] = task
         if task.name:
-            self._by_name[task.name] = task.id
+            if task.restore is None:
+                self._by_name[task.name] = task.id
+            if self.name_registry is not None:
+                self.name_registry.register(task.name, task.id)
 
     def _push(self, task: BackgroundTask, event: Event | ApprovalRequest) -> None:
         if isinstance(event, ApprovalRequest):
@@ -115,14 +132,15 @@ class Manager:
             request.respond.set_result(Outcome.DENY_ONCE)
 
     def _start(self, task: BackgroundTask, text: str) -> asyncio.Task[str]:
-        handle = asyncio.create_task(
-            task.sub_agent.run_to_completion(
-                task.conv,
-                text,
-                cancel=task.cancel_event,
-                push=lambda event: self._push(task, event),
+        with with_cwd(task.cwd):
+            handle = asyncio.create_task(
+                task.sub_agent.run_to_completion(
+                    task.conv,
+                    text,
+                    cancel=task.cancel_event,
+                    push=lambda event: self._push(task, event),
+                )
             )
-        )
         task.handle = handle
         handle.add_done_callback(lambda done: self._finish(task, done))
         return handle
@@ -141,6 +159,17 @@ class Manager:
         if task.id in self._tasks:
             self._notifications[task.id].append(build_task_notification(task))
             self._done.put_nowait(task.id)
+            if self._done_callbacks:
+                worker = asyncio.create_task(self._notify_done(task.id))
+                self._callback_tasks.add(worker)
+                worker.add_done_callback(self._callback_tasks.discard)
+
+    async def _notify_done(self, task_id: str) -> None:
+        for callback in self._done_callbacks:
+            try:
+                await callback(task_id)
+            except Exception:
+                logging.getLogger(__name__).exception("子 Agent 完成回调失败")
 
     async def launch(
         self,
@@ -151,8 +180,15 @@ class Manager:
         *,
         cleanup: Callable[[], Awaitable[None]] | None = None,
         prompt: str | None = None,
+        id_: str | None = None,
+        cwd: str = "",
+        restore: Callable[[], Conversation] | None = None,
     ) -> str:
-        entry = BackgroundTask(ag, conv, name, task, cleanup)
+        entry = BackgroundTask(ag, conv, name, task, cleanup, cwd=cwd, restore=restore)
+        if id_ is not None:
+            entry.id = id_
+        if entry.id in self._tasks:
+            raise ValueError(f"后台子 Agent ID 已存在：{entry.id}")
         self._register(entry)
         self._start(entry, task if prompt is None else prompt)
         return entry.id
@@ -197,19 +233,50 @@ class Manager:
             task.handle.cancel()
         return True
 
-    async def send_message(self, name: str, message: str) -> str:
-        task = self.get(self._by_name.get(name, ""))
+    async def send_message(
+        self, name: str, message: str, *, teammate: bool = False
+    ) -> str:
+        registered = self.name_registry.resolve(name) if self.name_registry else None
+        task = (
+            self.get(name)
+            or self.get(registered or "")
+            or self.get(self._by_name.get(name, ""))
+        )
+        if task is not None and task.restore is not None and not teammate:
+            task = self.get(self._by_name.get(name, "")) or task
         if task is None:
             raise TaskNotFound(f"未找到名为 {name} 的后台子 Agent")
-        if task.status != Status.COMPLETED:
+        if task.restore is not None and not teammate:
+            raise TaskNotFound(f"{name} 是团队队员，请使用 to 和 content 发送团队消息")
+        if task.status == Status.RUNNING or (
+            task.restore is None and task.status != Status.COMPLETED
+        ):
             raise TaskBusy(
                 f"子 Agent {name} 当前状态为 {task.status}，只能续派已完成的任务"
             )
+        if task.restore is not None:
+            task.conv = task.restore()
         task.status, task.result, task.err = Status.RUNNING, "", None
         task.end_time = 0.0
         task.cancel_event = asyncio.Event()
         self._start(task, message)
         return task.id
+
+    async def remove(self, task_id: str) -> None:
+        task = self.get(task_id)
+        if task is None:
+            return
+        await self.stop(task_id)
+        del self._tasks[task_id]
+        self._notifications.pop(task_id, None)
+        if self._by_name.get(task.name) == task_id:
+            del self._by_name[task.name]
+        if self.name_registry is not None:
+            self.name_registry.unregister(task.name, task_id)
+        if task.handle is not None:
+            await asyncio.gather(task.handle, return_exceptions=True)
+        if task.cleanup is not None:
+            await task.cleanup()
 
     def subscribe_done(self) -> asyncio.Queue[str]:
         return self._done
@@ -224,6 +291,13 @@ class Manager:
         return notice
 
     async def clear(self) -> None:
+        self.clearing = True
+        try:
+            await self._clear()
+        finally:
+            self.clearing = False
+
+    async def _clear(self) -> None:
         tasks = self.list()
         for task in tasks:
             await self.stop(task.id)
@@ -231,7 +305,10 @@ class Manager:
             *(task.handle for task in tasks if task.handle is not None),
             return_exceptions=True,
         )
+        await asyncio.gather(*self._callback_tasks, return_exceptions=True)
         for task in tasks:
+            if self.name_registry is not None:
+                self.name_registry.unregister(task.name, task.id)
             if task.cleanup is not None:
                 try:
                     await task.cleanup()

@@ -178,7 +178,7 @@ async def test_multi_provider_selection_sets_window_and_persists_runtime(sse_ser
 def test_dispatch_registry():
     reg = Registry()
     register_builtins(reg)
-    assert len(reg.visible()) == 14
+    assert len(reg.visible()) == 15
     assert reg.lookup("memory") is not None
     assert reg.lookup("worktree") is not None
     assert parse("普通输入") == ("", False)

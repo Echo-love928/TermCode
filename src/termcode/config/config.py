@@ -37,9 +37,16 @@ def effective_context_window(p: ProviderConfig) -> int:
 
 
 @dataclass
+class FeaturesConfig:
+    coordinator_mode: bool = False
+    fork_teammate: bool = False
+
+
+@dataclass
 class Config:
     providers: list[ProviderConfig] = field(default_factory=list)
     enable_subagent_background: bool = True
+    features: FeaturesConfig = field(default_factory=FeaturesConfig)
 
 
 def load(path: str | Path) -> Config:
@@ -131,4 +138,13 @@ def _from_dict(data: object) -> Config:
     )
     if not isinstance(background, bool):
         raise ConfigError("enable_subagent_background 必须是布尔值 true 或 false")
-    return Config(providers, background)
+    flags = data.get("features", {})
+    if not isinstance(flags, dict):
+        raise ConfigError("features 必须是映射")
+    features = FeaturesConfig()
+    for name in ("coordinator_mode", "fork_teammate"):
+        value = flags.get(name, False)
+        if not isinstance(value, bool):
+            raise ConfigError(f"features.{name} 必须是布尔值 true 或 false")
+        setattr(features, name, value)
+    return Config(providers, background, features)

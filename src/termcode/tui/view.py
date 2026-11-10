@@ -62,7 +62,15 @@ def compact_tokens(value: int) -> str:
     return str(value)
 
 
-def status_bar(mode: Mode, model: str, usage_in: int = 0, usage_out: int = 0) -> Table:
+def status_bar(
+    mode: Mode,
+    model: str,
+    usage_in: int = 0,
+    usage_out: int = 0,
+    *,
+    coordinator_mode: bool = False,
+    team_name: str = "",
+) -> Table:
     table = Table.grid(expand=True, padding=(0, 1))
     table.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
     table.add_column(ratio=1, justify="right", overflow="ellipsis", no_wrap=True)
@@ -74,6 +82,10 @@ def status_bar(mode: Mode, model: str, usage_in: int = 0, usage_out: int = 0) ->
     }
     title, style = labels[mode]
     label = Text(title, style=style)
+    if coordinator_mode:
+        label.append(" [COORDINATOR]")
+    if team_name:
+        label.append(f" [Team: {team_name}]")
     usage = f"↑{compact_tokens(usage_in)} ↓{compact_tokens(usage_out)} tok"
     table.add_row(label, Text(f"{model} · {usage}", style="dim"))
     return table

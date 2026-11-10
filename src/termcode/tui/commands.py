@@ -21,6 +21,7 @@ from termcode.tui.compact import format_compact_notice
 from termcode.tui.view import error_block
 
 if TYPE_CHECKING:
+    from termcode.team import Manager as TeamManager
     from termcode.tui.app import TermCodeApp
 
 
@@ -78,8 +79,11 @@ class CommandUI:
     def worktree_accessor(self) -> WorktreeAccessor | None:
         return self.app.worktree_accessor()
 
+    def team_manager(self) -> TeamManager | None:
+        return self.app.team_mgr
+
     def tool_count(self) -> int:
-        return self.app._tool_registry.count()
+        return self.app.active_tool_registry().count()
 
     def memory_files(self) -> list[str]:
         if self.app.mem_mgr is None:
@@ -125,10 +129,11 @@ class CommandUI:
     async def _run_force_compact(self) -> None:
         app = self.app
         try:
+            registry = app.active_tool_registry()
             defs = (
-                app._tool_registry.read_only_definitions()
+                registry.read_only_definitions()
                 if app.mode == Mode.PLAN
-                else app._tool_registry.definitions()
+                else registry.definitions()
             )
             before, after = await app._ensure_agent().run_force_compact(
                 app.conv, defs, app.mode

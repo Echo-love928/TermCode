@@ -3,6 +3,7 @@
 from . import builtin_local as local
 from . import builtin_prompt as prompt
 from . import builtin_ui as ui
+from .builtin_team import handle_team, show_team_usage
 from .builtin_worktree import handle_worktree, show_worktree_usage
 from .command import Command, Kind
 from .registry import Registry
@@ -23,6 +24,13 @@ def register_builtins(reg: Registry) -> None:
         Command("review", "审查当前上下文中的代码", Kind.PROMPT, prompt.handle_review),
         Command("session", "查看会话标识及存档路径", Kind.LOCAL, local.handle_session),
         Command("status", "查看运行状态和用量", Kind.LOCAL, local.handle_status),
+        Command(
+            "team",
+            "查询和管理 Agent Teams",
+            Kind.LOCAL,
+            show_team_usage,
+            argument_handler=handle_team,
+        ),
         Command(
             "worktree",
             "创建、切换和管理 Git Worktree",

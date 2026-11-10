@@ -19,6 +19,7 @@ NAMES = [
     "review",
     "session",
     "status",
+    "team",
     "worktree",
 ]
 
@@ -66,7 +67,7 @@ def registry():
 def test_register_builtins_all_registered():
     commands = registry().visible()
     assert [cmd.name for cmd in commands] == NAMES
-    assert sum(cmd.kind == Kind.LOCAL for cmd in commands) == 6
+    assert sum(cmd.kind == Kind.LOCAL for cmd in commands) == 7
     assert sum(cmd.kind == Kind.UI for cmd in commands) == 6
     assert sum(cmd.kind == Kind.PROMPT for cmd in commands) == 2
     assert all(cmd.description and not cmd.hidden for cmd in commands)

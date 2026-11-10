@@ -10,10 +10,24 @@ from termcode.config import ConfigError, load
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["--team-member"]:
+        from termcode.team.member import parse_args, run_team_member
+
+        args = parse_args(sys.argv[2:])
+        try:
+            config = load(args.project_root / ".termcode/config.yaml")
+            asyncio.run(run_team_member(args, config))
+        except (ConfigError, OSError, ValueError, RuntimeError) as exc:
+            print(f"TermCode 队员：{exc}", file=sys.stderr)
+            raise SystemExit(1) from None
+        except KeyboardInterrupt:
+            pass
+        return
     if sys.argv[1:] in (["--help"], ["-h"]):
         print(
             "用法: termcode [--help | --version]\n"
-            "从当前目录的 .termcode/config.yaml 启动对话。"
+            "从当前目录的 .termcode/config.yaml 启动对话。\n"
+            "队员窗格入口：termcode --team-member --help"
         )
         return
     if sys.argv[1:] == ["--version"]:
@@ -34,7 +48,7 @@ def main() -> None:
 
 
 async def _run(config: ProviderConfig) -> None:
-    from termcode import __version__, hook, worktree
+    from termcode import __version__, coordinator, hook, team, worktree
     from termcode.agent import SessionRuntime
     from termcode.agent.agent_tool import AgentTool
     from termcode.compact import new_session_context
@@ -48,6 +62,8 @@ async def _run(config: ProviderConfig) -> None:
     from termcode.subagent import load_catalog
     from termcode.task import Manager as TaskManager
     from termcode.task import SendMessageTool, TaskGetTool, TaskListTool, TaskStopTool
+    from termcode.team.feature import fork_teammate_enabled
+    from termcode.team.tools import lifecycle_tools
     from termcode.tool import new_default_registry
     from termcode.tui.app import TermCodeApp
     from termcode.tui.keys import configure_terminal_keys
@@ -71,6 +87,22 @@ async def _run(config: ProviderConfig) -> None:
         print(f"Worktree 管理器降级：{exc}", file=sys.stderr)
         worktree_mgr = None
     task_mgr = TaskManager()
+    try:
+        team_mgr = team.Manager(
+            Path.home(),
+            root,
+            worktree_mgr,
+            task_mgr,
+            team.AgentNameRegistry(),
+            fork_enabled=fork_teammate_enabled(config),
+        )
+    except OSError as exc:
+        print(f"Agent Teams 不可用：{exc}", file=sys.stderr)
+        team_mgr = None
+    if team_mgr is not None:
+        await team_mgr.recover()
+        for team_tool in lifecycle_tools(team_mgr):
+            registry.register(team_tool)
     for subagent_tool in (
         AgentTool(
             catalog,
@@ -78,6 +110,7 @@ async def _run(config: ProviderConfig) -> None:
             bg_enabled=config.enable_subagent_background,
             providers=tuple(config.providers),
             worktree_mgr=worktree_mgr,
+            team_hook=team_mgr,
         ),
         TaskListTool(task_mgr),
         TaskGetTool(task_mgr),
@@ -95,7 +128,10 @@ async def _run(config: ProviderConfig) -> None:
         logging.getLogger(__name__).exception("无法创建会话存档，对话继续运行")
         writer = None
     cleanup_task = asyncio.create_task(
-        clean_expired(str(Path(root) / ".termcode/sessions"))
+        clean_expired(
+            str(Path(root) / ".termcode/sessions"),
+            protected=team_mgr.protected_sessions() if team_mgr else frozenset(),
+        )
     )
     manager = await new_manager(load_config(root), __version__)
     sweep_task = (
@@ -109,6 +145,7 @@ async def _run(config: ProviderConfig) -> None:
         for tool in manager.tools():
             registry.register(tool)
         engine, err = new_engine(root)
+        engine.allow_temp_files = True
         engine.mcp_tools = frozenset(tool.name() for tool in manager.tools())
         if err is not None:
             print("权限引擎降级：无法解析项目根目录", file=sys.stderr)
@@ -129,6 +166,8 @@ async def _run(config: ProviderConfig) -> None:
             subagent_catalog=catalog,
             enable_subagent_background=config.enable_subagent_background,
             worktree_mgr=worktree_mgr,
+            team_mgr=team_mgr,
+            coordinator_mode=coordinator.is_enabled(config),
         )
         try:
             await app.run_async(inline=True)

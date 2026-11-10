@@ -11,6 +11,7 @@ from termcode.permission.sandbox import (
     eval_symlinks_or_ancestor,
     resolve_root,
     sandbox_ok,
+    system_temp_file,
 )
 from termcode.permission.settings import (
     FRIENDLY_NAMES,
@@ -46,6 +47,7 @@ class Engine:
     _start_mode: Mode = Mode.DEFAULT
     root_valid: bool = True
     mcp_tools: frozenset[str] = field(default_factory=frozenset)
+    allow_temp_files: bool = False
     _persist_lock: Lock = field(
         default_factory=Lock, init=False, repr=False, compare=False
     )
@@ -79,18 +81,24 @@ class Engine:
         if is_file:
             if not ok:
                 return Decision.DENY, "无法解析文件路径参数，安全拒绝"
+            temp_file = call.name in {"read_file", "write_file", "edit_file"} and (
+                system_temp_file(self, target)
+            )
             cwd = cwd_from_ctx()
             if cwd is not None:
                 target = resolve_path(target)
-            if not sandbox_ok(self, target):
+            if not temp_file and not sandbox_ok(self, target, allow_temp=False):
                 return Decision.DENY, "路径在项目目录之外：" + target
             try:
-                if cwd is not None:
+                if temp_file:
+                    target = eval_symlinks_or_ancestor(target)
+                elif cwd is not None:
                     actual = Path(eval_symlinks_or_ancestor(target))
                     if not actual.is_relative_to(cwd):
                         return Decision.DENY, "路径在当前 Worktree 之外：" + target
                     logical_target = actual.relative_to(cwd).as_posix()
-                target = self.relative_target(target)
+                if not temp_file:
+                    target = self.relative_target(target)
             except (OSError, RuntimeError, ValueError):
                 return Decision.DENY, "无法解析文件路径参数，安全拒绝"
         elif call.name in self.mcp_tools:

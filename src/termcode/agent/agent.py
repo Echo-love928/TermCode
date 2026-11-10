@@ -9,7 +9,7 @@ from contextlib import aclosing
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from termcode import __version__, prompt
 from termcode.agent.event import CompactEvent, CompactPhase
@@ -44,6 +44,9 @@ from termcode.permission import Decision, Engine, Mode, Outcome, new_engine
 from termcode.prompt.environment import build_environment_context
 from termcode.tool import Registry, cwd_from_ctx, resolve_path
 from termcode.tool.load_skill import LoadSkill
+
+if TYPE_CHECKING:
+    from termcode.agent.team_hook import TeammateContext
 
 MAX_ITERATIONS = 25
 MAX_UNKNOWN_RUN = 3
@@ -170,6 +173,12 @@ class Agent:
     ) -> None:
         self._provider = provider
         self._registry = registry
+        self.base_registry = registry
+        self.team_lead_tools: Callable[[Registry], Registry] | None = None
+        self.tool_limit: frozenset[str] | None = None
+        self.teammate: TeammateContext | None = None
+        self.prompt_suffix = ""
+        self.provider_name = ""
         self._version = version
         self.engine = engine if engine is not None else new_engine(str(Path.cwd()))[0]
         self.runtime = runtime if runtime is not None else SessionRuntime()
@@ -213,10 +222,11 @@ class Agent:
         dont_ask: bool,
         query_source: QuerySource,
         label: str,
+        registry: Registry | None = None,
     ) -> "Agent":
         child = Agent(
             provider,
-            self._registry,
+            registry if registry is not None else self._registry,
             self._version,
             self.engine,
             runtime=SessionRuntime(session=session, context_window=context_window),
@@ -245,7 +255,17 @@ class Agent:
         )
 
     def tool_names(self) -> list[str]:
-        return [definition.name for definition in self._registry.definitions()]
+        return [definition.name for definition in self.current_registry().definitions()]
+
+    def current_registry(self) -> Registry:
+        registry = self._registry
+        if self.team_lead_tools is not None:
+            registry = self.team_lead_tools(registry)
+        if self.tool_limit is not None:
+            registry = registry.without(
+                frozenset(d.name for d in registry.definitions()) - self.tool_limit
+            )
+        return registry
 
     @property
     def provider(self) -> Provider:
@@ -498,6 +518,8 @@ class Agent:
             stable = self.system_prompt
             if stable is None:
                 stable = prompt.build_system_prompt(self._instruction_text, memory)
+            if self.prompt_suffix:
+                stable = f"{stable}\n\n{self.prompt_suffix}"
             user_prompt = ""
             if self.runtime.hook_engine is not None:
                 user_prompt = next(
@@ -512,17 +534,34 @@ class Agent:
             for iteration in range(1, self.max_turns + 1):
                 if cancel.is_set():
                     raise _TurnCancelled
+                if self.teammate is not None:
+                    from termcode.agent.team_mailbox import ingest_team_mailbox
+
+                    if self.teammate.shutdown_requested:
+                        text = "队员已确认退出。"
+                        conv.add_assistant(text)
+                        await finish(iteration, text)
+                        return text
+                    await _until_cancel(
+                        ingest_team_mailbox(self, self.teammate, conv), cancel
+                    )
+                    if self.permission_mode is not None:
+                        mode = self.permission_mode
                 system = System(
                     stable,
                     build_environment_context(
                         environment, self.active_skills, self._skill_catalog
                     ),
                 )
-                definitions = (
-                    self._registry.read_only_definitions()
-                    if mode == Mode.PLAN
-                    else self._registry.definitions()
-                )
+                registry = self.current_registry()
+                definitions = registry.definitions()
+                if mode == Mode.PLAN:
+                    definitions = [
+                        d
+                        for d in definitions
+                        if registry.is_read_only(d.name)
+                        or (self.teammate is not None and d.name == "SendMessage")
+                    ]
                 push(Event(iter=iteration))
                 reminder = (
                     prompt.plan_reminder((iteration - 1) % PLAN_REMINDER_INTERVAL == 0)
@@ -602,7 +641,7 @@ class Agent:
                     self.runtime.anchor_msg_len = conv.length()
                 unknown_run = (
                     unknown_run + 1
-                    if all(self._registry.get(c.name) is None for c in calls)
+                    if all(registry.get(c.name) is None for c in calls)
                     else 0
                 )
                 results = [ToolResult(c.id, NOTICE_CANCELLED, True) for c in calls]
@@ -668,7 +707,13 @@ class Agent:
         await self._dispatch_hook(
             HookEvent.PRE_USER_MESSAGE, mode, {"prompt": user_prompt}, cancel
         )
-        reminder = "\n\n".join(filter(None, (reminder, *self.runtime.take_reminders())))
+        reminders = [reminder]
+        for pending in self.runtime.take_reminders():
+            if self.team_lead_tools is not None and pending.startswith("<team-update>"):
+                conv.add_user(pending)
+            else:
+                reminders.append(pending)
+        reminder = "\n\n".join(filter(None, reminders))
         async with aclosing(
             self._provider.stream(
                 Request(conv.messages(), definitions, system, reminder)
@@ -719,16 +764,18 @@ class Agent:
         from termcode.agent.agent_tool import AgentTool
         from termcode.agent.fork import is_fork_context
 
+        registry = self.current_registry()
+
         def check_one(index: int) -> tuple[Decision, str]:
             call = calls[index]
             if call.name == "Agent":
                 if self.query_source == "fork" or is_fork_context(conv.messages()):
                     return Decision.DENY, "Fork 子 Agent 不能再启动 Agent"
-                if self.query_source != "main":
+                if self.query_source != "main" and self.teammate is None:
                     return Decision.DENY, "子 Agent 不能再启动 Agent"
-            if self._registry.get(call.name) is None:
+            if registry.get(call.name) is None:
                 return Decision.DENY, "未知工具，安全拒绝：" + call.name
-            read_only = self._registry.is_read_only(call.name)
+            read_only = registry.is_read_only(call.name)
             if self.dont_ask:
                 decision, reason = self.engine.check(
                     mode, call, read_only, dont_ask=True
@@ -737,7 +784,13 @@ class Agent:
                 decision, reason = self.engine.check(mode, call, read_only)
             if decision == Decision.DENY:
                 return decision, reason
-            if mode == Mode.PLAN and not read_only:
+            if self.dont_ask and decision == Decision.ASK:
+                return Decision.DENY, reason
+            if (
+                mode == Mode.PLAN
+                and not read_only
+                and not (self.teammate is not None and call.name == "SendMessage")
+            ):
                 return Decision.DENY, "计划模式仅允许只读工具，请使用 /do 开始执行。"
             if (
                 decision == Decision.ASK
@@ -768,7 +821,7 @@ class Agent:
                         await asyncio.to_thread(self.engine.persist_local_allow, call)
                     except Exception:
                         logging.getLogger(__name__).warning("永久放行规则保存失败")
-            tool = self._registry.get(call.name)
+            tool = registry.get(call.name)
             if isinstance(tool, AgentTool):
                 result = await tool.execute_for_turn(call.input, self, conv, mode, push)
             elif isinstance(tool, LoadSkill):
@@ -781,7 +834,7 @@ class Agent:
                     agent=self,
                 )
             else:
-                result = await self._registry.execute(call.name, call.input)
+                result = await registry.execute(call.name, call.input)
             results[index] = ToolResult(call.id, result.content, result.is_error)
             if call.name == "read_file" and not result.is_error:
                 try:
@@ -801,10 +854,8 @@ class Agent:
             if cancel.is_set():
                 raise _TurnCancelled
             j = i + 1
-            if self._registry.is_concurrency_safe(calls[i].name):
-                while j < len(calls) and self._registry.is_concurrency_safe(
-                    calls[j].name
-                ):
+            if registry.is_concurrency_safe(calls[i].name):
+                while j < len(calls) and registry.is_concurrency_safe(calls[j].name):
                     j += 1
             allowed: list[tuple[int, Decision, str]] = []
             started = i

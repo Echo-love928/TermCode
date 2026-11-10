@@ -26,6 +26,10 @@ TASK_TARGETS = {
     "TaskList": "",
     "TaskGet": "task_id",
     "TaskStop": "task_id",
+    "TaskCreate": "title",
+    "TaskUpdate": "task_id",
+    "TeamCreate": "team_name",
+    "TeamDelete": "team_name",
     "SendMessage": "name",
 }
 
@@ -116,6 +120,8 @@ def extract_target(call: ToolCall) -> tuple[str, bool, bool]:
         elif call.name in TASK_TARGETS:
             default = "fork" if call.name == "Agent" else call.name
             target = data.get(TASK_TARGETS[call.name], default)
+            if call.name == "SendMessage":
+                target = data.get("to", target)
             if call.name == "Agent" and isinstance(target, str):
                 target = target.strip() or default
         else:

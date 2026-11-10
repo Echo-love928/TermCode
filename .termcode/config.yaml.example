@@ -29,6 +29,11 @@ providers:
   #   api_key: "YOUR_DEEPSEEK_API_KEY"
   #   context_window: 128000
 
+# 可选团队功能，默认关闭。协调模式还需设置 TERMCODE_COORDINATOR_MODE=1。
+# features:
+#   coordinator_mode: false
+#   fork_teammate: false
+
 # 项目指令按优先级加载：项目根 TERMCODE.md、.termcode/TERMCODE.md、
 # ~/.termcode/TERMCODE.md。指令支持 @include 相对路径，启动时加载一次。
 # .termcode/sessions/ 保存 JSONL 对话及工具结果；/resume 可搜索恢复历史会话。

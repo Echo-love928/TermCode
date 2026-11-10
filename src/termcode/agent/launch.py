@@ -19,6 +19,8 @@ from termcode.tool.filter import FilterParams, apply_agent_tool_filter
 def child_tools(
     parent: Agent, definition: Definition, *, background: bool
 ) -> list[str]:
+    from termcode.task import TaskListTool
+
     return apply_agent_tool_filter(
         FilterParams(
             parent.tool_names(),
@@ -27,6 +29,9 @@ def child_tools(
             definition.tools,
             definition.disallowed_tools,
             definition.is_fork(),
+            legacy_task_tools=isinstance(
+                parent.base_registry.get("TaskList"), TaskListTool
+            ),
         )
     )
 
@@ -80,7 +85,7 @@ async def prepare_child(
             permission_mode=definition.permission_mode
             if permission_mode is None
             else permission_mode,
-            dont_ask=definition.dont_ask,
+            dont_ask=definition.dont_ask or parent.teammate is not None,
             query_source=source,
             label=label,
         )

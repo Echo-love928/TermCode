@@ -33,7 +33,31 @@ def eval_symlinks_or_ancestor(abs_path: str) -> str:
     return str(resolved.joinpath(*suffix).resolve(strict=False))
 
 
-def sandbox_ok(engine: Engine, path: str) -> bool:
+def system_temp_file(engine: Engine, path: str) -> bool:
+    requested = Path(path)
+    if (
+        not engine.allow_temp_files
+        or os.name != "posix"
+        or not (
+            requested.is_relative_to("/tmp") or requested.is_relative_to("/private/tmp")
+        )
+    ):
+        return False
+    try:
+        target = Path(eval_symlinks_or_ancestor(path))
+        temp = Path("/tmp").resolve(strict=True)
+        if not target.is_relative_to(temp) or target == temp:
+            return False
+        root = Path(engine.root)
+        if root.is_relative_to(temp) and root != temp:
+            # 项目本身在临时目录时，兄弟 Worktree 仍受项目隔离约束。
+            return root.relative_to(temp).parts[0] != target.relative_to(temp).parts[0]
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def sandbox_ok(engine: Engine, path: str, *, allow_temp: bool = True) -> bool:
     if not engine.root_valid:
         return False
     try:
@@ -42,6 +66,8 @@ def sandbox_ok(engine: Engine, path: str) -> bool:
             target = Path(engine.root) / target
         resolved = os.path.normcase(eval_symlinks_or_ancestor(str(target)))
         root = os.path.normcase(engine.root)
-        return os.path.commonpath((root, resolved)) == root
+        return os.path.commonpath((root, resolved)) == root or (
+            allow_temp and system_temp_file(engine, path)
+        )
     except (OSError, RuntimeError, ValueError):
         return False

@@ -111,6 +111,11 @@ class Registry:
                 registry.register(tool)
         return registry
 
+    def overlay(self, tools: list[Tool]) -> "Registry":
+        registry = Registry()
+        registry._tools = self._tools | {tool.name(): tool for tool in tools}
+        return registry
+
     async def execute(
         self,
         name: str,

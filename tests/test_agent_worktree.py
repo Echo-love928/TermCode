@@ -108,6 +108,8 @@ async def test_cli_worktree_startup_and_tool_list(repo, git_root, monkeypatch, c
             "TaskGet",
             "TaskStop",
             "SendMessage",
+            "TeamCreate",
+            "TeamDelete",
             "LoadSkill",
             "InstallSkill",
         }
